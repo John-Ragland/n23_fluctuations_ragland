@@ -1,0 +1,154 @@
+[build-system]
+requires = ["hatchling>=1.26", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+
+[project]
+name = "NESCAFE23_fluctuations"
+authors = [
+  { name = "John Ragland", email = "jragland96@gmail.com" },
+]
+description = "Code supporting the analysis of acoustic fluctuations of intensity and phase for the NESCAFE 2023 acoustic tomography experiment."
+readme = "README.md"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+classifiers = [
+  "Development Status :: 1 - Planning",
+  "Intended Audience :: Science/Research",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering",
+  "Typing :: Typed",
+]
+dynamic = ["version"]
+dependencies = [
+  "python-dotenv",
+  "pygenray",
+  "tqdm",
+  "fsspec",
+  "xarray[complete]",
+  "questionary",
+
+]
+
+[project.scripts]
+nescafe23_processing = "nescafe23_fluctuations.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/John-Ragland/NESCAFE23_fluctuations"
+"Bug Tracker" = "https://github.com/John-Ragland/NESCAFE23_fluctuations/issues"
+Discussions = "https://github.com/John-Ragland/NESCAFE23_fluctuations/discussions"
+Changelog = "https://github.com/John-Ragland/NESCAFE23_fluctuations/releases"
+
+
+[dependency-groups]
+test = [
+  "pytest >=9",
+  "pytest-cov >=7",
+]
+dev = [
+  { include-group = "test" },
+  "ruff",
+  "pre-commit",
+]
+docs = [
+  "sphinx>=7.0",
+  "myst_parser>=0.13",
+  "sphinx_copybutton",
+  "sphinx_autodoc_typehints",
+  "furo>=2023.08.17",
+]
+
+
+[tool.hatch]
+version.source = "vcs"
+build.hooks.vcs.version-file = "src/nescafe23_fluctuations/_version.py"
+
+[tool.hatch.envs.default]
+dependency-groups = ["dev"]
+
+[tool.hatch.envs.hatch-test]
+dependency-groups = ["test"]
+env-vars.PYTHONWARNDEFAULTENCODING = "1"
+
+
+[tool.pytest]
+minversion = "9.0"
+addopts = ["-ra", "--showlocals"]
+strict = true
+filterwarnings = [
+  "error",
+]
+log_level = "INFO"
+testpaths = [
+  "tests",
+]
+
+
+[tool.coverage]
+run.source = ["nescafe23_fluctuations"]
+report.exclude_also = [
+  '\.\.\.',
+  'if typing.TYPE_CHECKING:',
+]
+
+[tool.mypy]
+files = ["src", "tests"]
+python_version = "3.10"
+warn_unused_configs = true
+strict = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+warn_unreachable = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+
+[[tool.mypy.overrides]]
+module = "nescafe23_fluctuations.*"
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.format]
+# Enable preview style for better wrapping
+preview = true
+
+[tool.ruff.lint]
+extend-select = [
+  "B",      # flake8-bugbear
+  "I",      # isort
+  "RUF",    # Ruff-specific
+  "UP",     # pyupgrade
+]
+
+ignore = [
+  "B007", # loop control variable not used
+  "F841", # local variable assigned but never used
+  "B008", # function call in a loop
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["T20"]
+"noxfile.py" = ["T20"]
+"notebooks/**" = ["T20", "E402"]
+
+[tool.pylint]
+py-version = "3.10"
+ignore-paths = [".*/_version.py"]
+reports.output-format = "colorized"
+similarities.ignore-imports = "yes"
+messages_control.disable = [
+  "design",
+  "fixme",
+  "line-too-long",
+  "missing-module-docstring",
+  "missing-function-docstring",
+  "wrong-import-position",
+]
