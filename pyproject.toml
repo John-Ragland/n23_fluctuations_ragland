@@ -33,7 +33,11 @@ dependencies = [
   "fsspec",
   "xarray[complete]",
   "questionary",
-
+  "xrsignal",
+  "cmocean",
+  "seaborn",
+  "gsw",
+  "geopy"
 ]
 
 [project.scripts]
@@ -55,6 +59,7 @@ dev = [
   { include-group = "test" },
   "ruff",
   "pre-commit",
+  "nbstripout"
 ]
 docs = [
   "sphinx>=7.0",
@@ -115,6 +120,7 @@ disallow_incomplete_defs = true
 
 [tool.ruff]
 line-length = 88
+exclude = ["*.ipynb"]
 
 [tool.ruff.format]
 # Enable preview style for better wrapping

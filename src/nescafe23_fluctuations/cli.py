@@ -289,21 +289,20 @@ def compute_arrival_time_offset():
     dT_avg = (dT_t_upper + dT_t_lower) / 2
 
     # generate figure
-    fig = plt.figure(figsize=(6, 3))
-    plt.plot(np.arange(1, 24), dT_t_upper, label="upper array")
-    plt.plot(np.arange(1, 24), dT_t_lower, label="lower array")
+    plt.rcParams.update({"font.size": 8})
+    fig = plt.figure(figsize=(3.37, 2))
+    plt.plot(np.arange(1, 24), dT_t_upper, label="upper array", c="C0", lw=1)
+    plt.plot(np.arange(1, 24), dT_t_lower, label="lower array", c="C1", lw=1)
 
-    plt.plot(np.arange(1, 24), dT_avg, "k--", lw=1, label="average")
+    plt.plot(np.arange(1, 24), dT_avg, c="k", lw=1, label="average")
     plt.ylabel("$\\Delta \\tau$ [s]")
     plt.legend()
     plt.xlabel("transmission number")
-    plt.title("Estimated full arrival time shift", loc="left")
+    # plt.title("Estimated full arrival time shift", loc="left")
     plt.tight_layout()
 
-    figure_path = (
-        package_dir / "figures/auxiliary/common_arrival_time_shift_estimation.png"
-    )
-    fig.savefig(figure_path, dpi=300)
+    figure_path = package_dir / "figures/common_arrival_time_shift_estimation.pdf"
+    fig.savefig(figure_path, bbox_inches="tight")
 
     # save offset estimate
     with open(T_t_path, "wb") as f:

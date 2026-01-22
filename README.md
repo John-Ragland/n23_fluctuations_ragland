@@ -57,7 +57,15 @@ repo from GitHub and install the package in editable mode
 ```bash
 git clone https:/www.github.com/John-Ragland/NESCAFE23_fluctuations.git
 cd NESCAFE23_fluctuations
-pip install -e .
+pip install -e .[dev]
+pre-commit install
+```
+
+Outputs of the notebooks are stripped via `nbstripout` to keep the repo small.
+To enable this as a git filter, run the following command within the repo:
+
+```bash
+nbstripout --install
 ```
 
 **Data** The raw data, intermediate data products, and final results are stored
@@ -82,7 +90,7 @@ be run. All steps can be run by selecting `run all`, or individual steps can be
 selected within the CLI. To run the CLI type the following in the terminal
 
 ```bash
-nescafe23-fluctuations
+nescafe23-processing
 ```
 
 ## Figures
@@ -93,3 +101,13 @@ relative to the package structure at `notebooks/publication_figures`.
 ## Development
 
 **TO DO**
+
+- [ ] add script for mixing together sound speeds, currently using
+      'environment_data/dataproducts/full_field_new.nc'
+- [ ] update calculation of rays with final environment / geometry, etc.
+      Currently using 'NESCAFE23_analysis/dataproducts/ray_run_forward_back.pkl'
+      (which is a copy of
+      /Users/john/Code/NESCAFE/nescafe_pilot_analysis/wave_statistics/ray_run_forward_back_new_stitch.pkl)
+- [ ] update pygenray to reflect the latest version on pypi, so that everything
+      works as expected.
+  - right now I just have the local clone installating in the venv

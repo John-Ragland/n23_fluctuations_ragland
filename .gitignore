@@ -190,3 +190,8 @@ Thumbs.db
 
 # Don't commit figure files for now...
 figures/
+
+
+src/nescafe23_fluctuations/source_localization.py
+# This file is omitted because the paper explaining these methods in the process of being published.
+# If you are interested in the specifics of this code, please feel free to reach out.
