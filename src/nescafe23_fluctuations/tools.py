@@ -98,6 +98,38 @@ PEAK_BBOXS = {
     "-15b": (110, 111.4, 20, 30),
 }
 
+# dictionary containing tuples for matching forward and backward eigenrays. These pairings are hand-picked
+# notebook for handing picking: `notebooks/auxiliary/Ray_forward_backward_matching.ipynb`
+# (front_idx, back_idx)
+
+EIG_INDEXS = {
+    "+7": [(0, 0), (1, 1)],
+    "-7": [(0, 2), (1, 1), (2, 0)],
+    "-6": [(0, 0)],
+    "+6": [(0, 0)],
+    "-5b": [(0, 0), (1, 1)],
+    "-6b": [(0, 0)],
+    "+6b": [(0, 0)],
+    "+7b": [(0, 0)],
+    "-7b": [(0, 0)],
+    "-8b": [(0, 0)],
+    "+8b": [(0, 0)],
+    "+9b": [(1, 0)],
+    "-9b": [(0, 0)],
+    "-10b": [(0, 0)],
+    "+10b": [(0, 0)],
+    "+11b": [(0, 0)],
+    "-11b": [(0, 0)],
+    "-12b": [(0, 0)],
+    "+12b": [(0, 0)],
+    "+13b": [(0, 0)],
+    "-13b": [(0, 0)],
+    "-14b": [(0, 0)],
+    "+14b": [(0, 0)],
+    "+15b": [(0, 0)],
+    "-15b": [(0, 0)],
+}
+
 
 def aog_vsdg(pr, tem, sal):
     """
@@ -510,6 +542,8 @@ def parse_ray_id(ray_id: str) -> str:
     -------
     ray_id_pr : str
         Converted ray identifier in pygenray format (e.g., '-7.0', '+10.0b').
+    (sign, number, suffix) : tuple
+        Parsed components of the ray identifier:
     """
     sign = ray_id[0]  # '+' or '-'
     if ray_id.endswith("b"):
@@ -631,6 +665,8 @@ def compute_ray_path_variables(
         - N : buoyancy frequency profile used
         - 'm_low' : minimum vertical wavenumber along ray
         - 'm_high' : maximum vertical wavenumber along ray
+        - 'rs_back' : backward ray range values
+        - 'zs_back' : backward ray depth values
     """
 
     ## Parse ray id, get backward ray id, and convert to pr format
@@ -659,7 +695,6 @@ def compute_ray_path_variables(
     except IndexError:
         ray_idx_backward = np.where(eigs_backward.ray_id[0] == ray_id_pr_back)[0]
 
-    ## Calculate Phi^2
     # get the range and depth vectors along the eigenray
     rs = eigs.rs[0][ray_idx_forward, :].flatten()
     zs = eigs.zs[0][ray_idx_forward, :].flatten()
@@ -687,17 +722,35 @@ def compute_ray_path_variables(
     # resample along parametric ray range vector
     N0B_ray = N0B_ray.interp({"range": rsx})
 
-    omegac = 2 * np.pi * fc
+    ## Fractional sound speed variance
     mu2 = zeta0**2 * (N0 / Nray) * (dcdz_ray) ** 2 / Cray**2
 
     jstar = 3
-    J = round(float((N0B_ray.mean() ** 2) / (6 * np.pi * zeta0**2 * N0**2 * jstar)))
-    j = np.arange(1, J + 1)
-    N_j = np.sum(1 / (j**2 + jstar**2))
-    H = 1 / N_j * 1 / (j**2 + jstar**2)
 
-    mean_jn1 = np.sum(H / j)
-    mean_j = np.sum(j * H)
+    # maximum number of internal wave modes along ray path
+    J_max = round(float((N0B_ray.max() ** 2) / (6 * np.pi * zeta0**2 * N0**2 * jstar)))
+
+    # number of internal wave modes along ray path
+    J = N0B_ray**2 / (6 * np.pi * zeta0**2 * N0**2 * jstar)
+    J.name = "number of internal wave modes"
+    J.attrs["units"] = "dimensionless"
+
+    j = np.arange(1, J_max + 1)
+
+    # construct H(j), H(j) = 0 for j > J(s)
+    H = 1 / (j**2 + jstar**2)
+    H = H[:, None] * np.ones((1, len(rs)))  # shape (len(j), len(rs))
+
+    for s_idx in range(len(rs)):
+        J_int = np.floor(J[s_idx].values)
+        H[j > J_int, s_idx] = 0
+
+    # unit normalization of H(j)
+    N_j = np.sum(H, axis=0)
+    H = H / N_j
+
+    mean_jn1 = np.sum(H / j[:, None], axis=0)
+    mean_j = np.sum(j[:, None] * H, axis=0)
 
     Omega = 7.292115e-5  # Earth Rotation Speed [rad/s]
     f = 2 * Omega * np.sin(np.radians(latitude))
@@ -723,12 +776,11 @@ def compute_ray_path_variables(
     # set invalid Lp values to 0
     Lp = Lp.where(np.isfinite(Lp), 0)
 
-    # numerically compute integral with trapezoid
+    # numerically compute parametric derivatives
     drdt = np.gradient(rs)
     dzdt = np.gradient(zs)
 
-    ## Compute $\\Lambda$
-    # compute vertical fresnel scale
+    ## Vertical Fresnel Scale (\zeta_1, \zeta_2, R_f^2)
     forward_launch_angle = eigs.launch_angles[0][ray_idx_forward]
     backward_launch_angle = eigs_backward.launch_angles[0][ray_idx_backward]
 
@@ -750,7 +802,10 @@ def compute_ray_path_variables(
         envi_back,
     )
 
-    # ray tube functions
+    ## Ray Tube Functions (used for calculating the vertical fresnel zone)
+
+    ### adding code to compute the upward and downward d launch angles
+
     RT_zeta_1 = (eigs.zs[0][ray_idx_forward] - ray_hat_forward.z) / (
         eigs.zs[0][ray_idx_forward, -1] - ray_hat_forward.z[-1]
     )
@@ -781,7 +836,7 @@ def compute_ray_path_variables(
     # convert to xarray DataArray
     Rf2 = xr.DataArray(Rf2, dims=["s"], coords={"s": Cray.coords["s"]})
     Rf2.name = "$R_f^2$"
-    Rf2.attrs["units"] = "m^2"
+    Rf2.attrs["units"] = "$m^2$"
 
     # calculate {m^2}
     brack_m2 = (np.pi * Nray / N0B_ray) ** 2 * mean_j / mean_jn1
@@ -792,7 +847,6 @@ def compute_ray_path_variables(
 
     # Calculate vertical wavenumber bounds (as a function of ray path)
     m_low = np.pi * Nray / N0B_ray  # [rad / m]
-    J = N0B_ray**2 / (6 * np.pi * zeta0**2 * N0**2 * jstar)
 
     m_high = J * np.pi * Nray / N0B_ray  # [rad / m]
 
@@ -811,6 +865,7 @@ def compute_ray_path_variables(
         "N0B_ray": N0B_ray,
         "mu2": mu2,
         "J": J,
+        "J_max": J_max,
         "j": j,
         "N_j": N_j,
         "H": H,
@@ -830,6 +885,8 @@ def compute_ray_path_variables(
         "N": N,
         "m_lo_max": m_lo_max,
         "m_hi_max": m_hi_max,
+        "rh_forward": ray_hat_forward,
+        "rh_backward": ray_hat_backward,
     }
 
     return ray_variables
@@ -841,9 +898,24 @@ def compute_n23_ray_variables(
     f: float = 9.216181213401561e-05,  # [rad/s]
     zeta0: float = 7.3,  # m 1GM energy
     N0: float = 3 * (2 * np.pi) / 3600,  # [rad/s], 3 cph
+    ray_ids: list | None = None,
 ):
     """
     Compute the ray path variables for the nescafe23 environment.
+    Parameters
+    ----------
+    fc : float
+        center acoustic frequency [Hz], Default is 250 Hz
+    jstar : float
+        modal bandwidth parameter for GM spectrum, Default is 3
+    f : float
+        Coriolis parameter [rad/s], Default is value at pilot mooring latitude
+    zeta0 : float
+        reference displacement of GM spectrum, Default is 7.3 m (1GM energy level)
+    N0 : float
+        reference buoyancy frequency of GM spectrum [rad/s], Default is 3 cph
+    ray_ids : list
+        list of ray identifier strings (e.g., '-7', '+10b'). If None, use all ray IDs in EIG_INDEXS.
 
     Returns
     -------
@@ -882,9 +954,7 @@ def compute_n23_ray_variables(
     """
 
     # open environments
-    fn1 = (
-        f"{os.environ['NESCAFE23_DATADIR']}environment_data/dataproducts/full_field.nc"
-    )
+    fn1 = f"{os.environ['NESCAFE23_DATADIR']}environment_data/dataproducts/full_field_nlm.nc"
 
     envi_field = xr.open_dataset(fn1)
 
@@ -924,67 +994,50 @@ def compute_n23_ray_variables(
     envi = ray_run["envi"]
     envi_back = ray_run["envi_back"]
 
-    ##TODO update rays with geometry from linear source localization
-    source_depth = 2361.503517021759
-    receiver_range = 149255.61260700936
-    receiver_depths = [1065.7507088127552]
-
-    # dictionary containing tuples for matching forward and backward eigenrays. These pairings are hand-picked
-    # (front_idx, back_idx)
-    eig_indexs = {
-        "+7": (0, 0),
-        "-7": (0, 0),
-        "-6": (0, 0),
-        "+6": (0, 0),
-        "-5b": (0, 0),
-        "-6b": (0, 0),
-        "+6b": (0, 0),
-        "+7b": (0, 0),
-        "-7b": (0, 0),
-        "-8b": (0, 0),
-        "+8b": (2, 0),
-        "+9b": (0, 0),
-        "-9b": (0, 0),
-        "-10b": (0, 0),
-        "+10b": (0, 0),
-        "+11b": (0, 0),
-        "-11b": (0, 0),
-        "-12b": (0, 0),
-        "+12b": (0, 0),
-        "+13b": (0, 0),
-        "-13b": (0, 0),
-        "-14b": (0, 0),
-        "+14b": (0, 0),
-        "+15b": (0, 0),
-        "-15b": (0, 0),
-    }
+    source_depth = ray_run["geo"]["source_depth"]
+    receiver_range = ray_run["geo"]["receiver_range"]
+    receiver_depths = ray_run["geo"]["receiver_depths"]
 
     rvs = {}
 
-    for ray_id in tqdm(eig_indexs.keys()):
-        rvs[ray_id] = compute_ray_path_variables(
-            ray_id,
-            eigs,
-            eigs_back,
-            envi,
-            envi_back,
-            source_depth,
-            receiver_depths[0],
-            receiver_range,
-            fc,
-            N_rad,
-            dcdz_p,
-            zeta0,
-            N0,
-            jstar,
-            eig_idx_forward=eig_indexs[ray_id][0],
-            eig_idx_backward=eig_indexs[ray_id][1],
-        )
+    if ray_ids is None:
+        ray_ids = list(EIG_INDEXS.keys())
+
+    if len(ray_ids) == 0:
+        tqdm_disable = False
+    else:
+        tqdm_disable = True
+
+    for k, ray_id in tqdm(enumerate(ray_ids), disable=tqdm_disable):
+        for n in range(len(EIG_INDEXS[ray_id])):
+            if n == 0:
+                rvs[ray_id] = []
+
+            rvs[ray_id].append(
+                compute_ray_path_variables(
+                    ray_id,
+                    eigs,
+                    eigs_back,
+                    envi,
+                    envi_back,
+                    source_depth,
+                    receiver_depths[0],
+                    receiver_range,
+                    fc,
+                    N_rad,
+                    dcdz_p,
+                    zeta0,
+                    N0,
+                    jstar,
+                    eig_idx_forward=EIG_INDEXS[ray_id][n][0],
+                    eig_idx_backward=EIG_INDEXS[ray_id][n][1],
+                )
+            )
 
     return rvs
 
 
-def plot_ray_variables(rvs: dict, ray_id: str):
+def plot_ray_variables(rvs: dict, ray_ids: list, pair_idx: int = 0):
     """
     Given ray variables calculated with `compute_ray_path_variables`, generate plot summarizing them.
 
@@ -992,9 +1045,10 @@ def plot_ray_variables(rvs: dict, ray_id: str):
     ----------
     rvs : dict
         dictionary containing ray variables as output from `compute_ray_path_variables`
-    ray_id : str
+    ray_ids : list
         ray identifier (number of ray turning points with sign of launch angle)
-
+    pair_idx : int, optional
+        index of ray pair to plot the ray variables for
     Returns
     -------
     fig : matplotlib.figure.Figure
@@ -1002,144 +1056,214 @@ def plot_ray_variables(rvs: dict, ray_id: str):
     """
     fig, axs = plt.subplots(3, 4, figsize=(13, 10))
 
-    fig.suptitle(f"Ray ID: {ray_id}", fontweight="bold")
+    fig.suptitle(f"Ray IDs: {', '.join(ray_ids)}", fontweight="bold")
     axs = axs.flatten()
 
-    ## Sound Speed
-    plt.sca(axs[0])
-    rvs["envi"].plot()
-    plt.xlim([0, rvs["receiver_range"]])
+    for i, ray_id in enumerate(ray_ids):
+        rv = rvs[ray_id][pair_idx]
+        ## Sound Speed
+        plt.sca(axs[0])
+        if i == 0:
+            rv["envi"].plot()
+            plt.xlim([0, rv["receiver_range"]])
+        else:
+            pass
 
-    ## Buoyancy Frequency
-    plt.sca(axs[1])
-    rvs["N"].plot(x="range", vmin=0, vmax=0.03)
+        ## Buoyancy Frequency
+        plt.sca(axs[1])
+        if i == 0:
+            rv["N"].plot(x="range", vmin=0, vmax=0.03)
+        else:
+            pass
 
-    plt.xlim([0, rvs["receiver_range"]])
-    plt.ylim([5000, 0])
+        plt.xlim([0, rv["receiver_range"]])
+        plt.ylim([5000, 0])
 
-    ## Ray Path
-    plt.sca(axs[2])
-    plt.plot(rvs["rs"] / 1000, -rvs["zs"])
-    plt.ylim([5000, 0])
-    plt.title("Eigenray Path")
-    plt.xlabel("range [km]")
-    plt.ylabel("depth [m]")
+        ## Ray Path
+        plt.sca(axs[2])
+        plt.plot(rv["rs"] / 1000, -rv["zs"], label=ray_id)
+        plt.ylim([5000, 0])
+        plt.title("Eigenray Path")
+        plt.xlabel("range [km]")
+        plt.ylabel("depth [m]")
+        plt.legend()
 
-    ## N0B
-    plt.sca(axs[3])
-    plt.plot(rvs["N0B_ray"].range / 1000, rvs["N0B_ray"])
-    plt.xlabel("range [km]")
-    plt.ylabel("[rad m/s]")
-    plt.title("$N_0 B(r)$")
-    if np.any(np.isnan(rvs["N0B_ray"])):
-        plt.text(
-            0.95,
-            0.95,
-            "nan",
-            horizontalalignment="center",
-            verticalalignment="center",
-            transform=plt.gca().transAxes,
+        ## N0B
+        plt.sca(axs[3])
+        plt.plot(rv["N0B_ray"].range / 1000, rv["N0B_ray"])
+        plt.xlabel("range [km]")
+        plt.ylabel("[rad m/s]")
+        plt.title("$N_0 B(r)$")
+        if np.any(np.isnan(rv["N0B_ray"])):
+            plt.text(
+                0.95,
+                0.95,
+                "nan",
+                horizontalalignment="center",
+                verticalalignment="center",
+                transform=plt.gca().transAxes,
+            )
+
+        ## <mu^2>
+        plt.sca(axs[4])
+        plt.plot(rv["mu2"].range / 1000, rv["mu2"])
+        plt.title("$\\langle \\mu^2(z) \\rangle$")
+        plt.xlabel("range [km]")
+        if np.any(np.isnan(rv["mu2"])):
+            plt.text(
+                0.95,
+                0.95,
+                "nan",
+                horizontalalignment="center",
+                verticalalignment="center",
+                transform=plt.gca().transAxes,
+            )
+
+        ## a
+        plt.sca(axs[5])
+        plt.plot(rv["rs"] / 1000, rv["a"])
+        plt.xlabel("range [km]")
+        plt.title("$a$")
+
+        if np.any(np.isnan(rv["a"])):
+            plt.text(
+                0.95,
+                0.95,
+                "nan",
+                horizontalalignment="center",
+                verticalalignment="center",
+                transform=plt.gca().transAxes,
+            )
+
+        ## Lp
+        plt.sca(axs[6])
+        plt.plot(rv["rs"] / 1000, rv["L_p"].values)
+        plt.yscale("log")
+        plt.xlabel("range [km]")
+        plt.ylabel("$L_p$ [m]")
+        plt.title("$L_p$ [m]")
+
+        if np.any(np.isnan(rv["L_p"].values)):
+            plt.text(
+                0.95,
+                0.95,
+                "nan",
+                horizontalalignment="center",
+                verticalalignment="center",
+                transform=plt.gca().transAxes,
+            )
+
+        ## RT_zeta_1 and RT_zeta_2
+        plt.sca(axs[7])
+        plt.plot(rv["rs"] / 1000, rv["RT_zeta_1"], label="$\\zeta_1$")
+        # plt.plot(rv["rs"] / 1000, rv["RT_zeta_2"], label="$\\zeta_2$")
+        plt.xlabel("range [km]")
+        plt.title("$\\zeta_1$ and $\\zeta_2$")
+        plt.legend()
+        plt.grid()
+
+        if np.any(np.isnan(rv["RT_zeta_1"])) and not np.any(np.isnan(rv["RT_zeta_2"])):
+            plt.text(
+                0.95,
+                0.95,
+                "nan",
+                horizontalalignment="center",
+                verticalalignment="center",
+                transform=plt.gca().transAxes,
+            )
+
+        ## Rf^2
+        plt.sca(axs[8])
+        plt.plot(rv["rs"] / 1000, rv["Rf2"])
+        plt.xlabel("range [km]")
+        plt.title("$R_f^2$ [$m^2$]")
+        plt.ylabel("$R_f^2$ [$m^2$]")
+
+        if np.any(np.isnan(rv["Rf2"])):
+            plt.text(
+                0.95,
+                0.95,
+                "nan",
+                horizontalalignment="center",
+                verticalalignment="center",
+                transform=plt.gca().transAxes,
+            )
+
+        ## {m^2}
+        plt.sca(axs[9])
+        plt.plot(rv["rs"] / 1000, rv["brack_m2"])
+        plt.xlabel("range [km]")
+        plt.title(r"{ $m^2(z)$ }")
+
+        if np.any(np.isnan(rv["brack_m2"])):
+            plt.text(
+                0.95,
+                0.95,
+                "nan",
+                horizontalalignment="center",
+                verticalalignment="center",
+                transform=plt.gca().transAxes,
+            )
+
+        ## $ cos(m(j)) $\Delta z(s)$
+        plt.sca(axs[10])
+        mj = (
+            np.pi
+            * rv["j"][None, :, None]
+            * rv["Nray"].values[:, None, None]
+            / rv["N0B_ray"].values[:, None, None]
+        )  # (s,j,1)
+        summand = rv["H"].T[:, :, None] * (
+            1
+            - np.cos(mj * rv["RT_zeta_1"][:, None, None] * 250) / rv["j"][None, :, None]
+        )  # (s,j,dzr)
+        # set any nan values to zero
+        summand = np.where(np.isfinite(summand), summand, 0)
+
+        # plt.plot(rv['rs'] / 1000, summand[:,:,0], alpha=0.1, lw=1, c='k')
+
+        if i == 0:
+            axtwin = plt.gca().twinx()
+        plt.sca(axtwin)
+
+        plt.plot(rv["rs"] / 1000, np.nansum(summand[:, :, 0], axis=1), lw=2)
+
+        plt.title(
+            "$\\cos(m(j) \\zeta_1(s) \\Delta z_r(s)$\nfor $j=1,2,...,M$ and $\\Delta z_r = 250$ [ m ]"
         )
 
-    ## <mu^2>
-    plt.sca(axs[4])
-    plt.plot(rvs["mu2"].range / 1000, rvs["mu2"])
-    plt.title("$\\langle \\mu^2(z) \\rangle$")
-    plt.xlabel("range [km]")
-    if np.any(np.isnan(rvs["mu2"])):
-        plt.text(
-            0.95,
-            0.95,
-            "nan",
-            horizontalalignment="center",
-            verticalalignment="center",
-            transform=plt.gca().transAxes,
-        )
+        plt.sca(axs[11])
+        omegac = 2 * np.pi * 250
 
-    ## a
-    plt.sca(axs[5])
-    plt.plot(rvs["rs"] / 1000, rvs["a"])
-    plt.xlabel("range [km]")
-    plt.title("$a$")
+        deltaz_r = np.linspace(0, 500, 100)
 
-    if np.any(np.isnan(rvs["a"])):
-        plt.text(
-            0.95,
-            0.95,
-            "nan",
-            horizontalalignment="center",
-            verticalalignment="center",
-            transform=plt.gca().transAxes,
-        )
+        ## Compute vertical coherence at deltaz_r locations
+        mj = (
+            np.pi
+            * rv["j"][None, :, None]
+            * rv["Nray"].values[:, None, None]
+            / rv["N0B_ray"].values[:, None, None]
+        )  # (s,j,1)
+        dz_s = rv["RT_zeta_1"][:, None, None] * deltaz_r[None, None, :]  # (s,1,dzr)
+        summand = rv["H"].T[:, :, None] * (
+            (1 - np.cos(mj * dz_s)) / rv["j"][None, :, None]
+        )  # (s,j,dzr)
+        # set any nan values to zero
+        summand = np.where(np.isfinite(summand), summand, 0)
 
-    ## Lp
-    plt.sca(axs[6])
-    plt.plot(rvs["rs"] / 1000, rvs["L_p"].values)
-    plt.yscale("log")
-    plt.xlabel("range [km]")
-    plt.ylabel("$L_p$ [m]")
-    plt.title("$L_p$ [m]")
+        integrand1 = (
+            2 * omegac**2 * rv["mu2"] * rv["L_p"] / (rv["Cray"] ** 2 + rv["mean_jn1"])
+        ).values
+        integrand = (
+            integrand1[:, None]
+            * np.sum(summand, axis=1)
+            * np.sqrt(rv["drdt"] ** 2 + rv["dzdt"] ** 2)[:, None]
+        )  # (s,dzr)
 
-    if np.any(np.isnan(rvs["L_p"].values)):
-        plt.text(
-            0.95,
-            0.95,
-            "nan",
-            horizontalalignment="center",
-            verticalalignment="center",
-            transform=plt.gca().transAxes,
-        )
+        # set any nan values to zero
+        integrand = np.where(np.isfinite(integrand), integrand, 0)
 
-    ## RT_zeta_1 and RT_zeta_2
-    plt.sca(axs[7])
-    plt.plot(rvs["rs"] / 1000, rvs["RT_zeta_1"], label="$\\zeta_1$")
-    plt.plot(rvs["rs"] / 1000, rvs["RT_zeta_2"], label="$\\zeta_2$")
-    plt.xlabel("range [km]")
-    plt.title("$\\zeta_1$ and $\\zeta_2$")
-    plt.legend()
-
-    if np.any(np.isnan(rvs["RT_zeta_1"])) and not np.any(np.isnan(rvs["RT_zeta_2"])):
-        plt.text(
-            0.95,
-            0.95,
-            "nan",
-            horizontalalignment="center",
-            verticalalignment="center",
-            transform=plt.gca().transAxes,
-        )
-
-    ## Rf^2
-    plt.sca(axs[8])
-    plt.plot(rvs["rs"] / 1000, rvs["Rf2"])
-    plt.xlabel("range [km]")
-    plt.title("$R_f^2$ [$m^2$]")
-    plt.ylabel("$R_f^2$ [$m^2$]")
-
-    if np.any(np.isnan(rvs["Rf2"])):
-        plt.text(
-            0.95,
-            0.95,
-            "nan",
-            horizontalalignment="center",
-            verticalalignment="center",
-            transform=plt.gca().transAxes,
-        )
-
-    ## {m^2}
-    plt.sca(axs[9])
-    plt.plot(rvs["rs"] / 1000, rvs["brack_m2"])
-    plt.xlabel("range [km]")
-    plt.title(r"{ $m^2(z)$ }")
-
-    if np.any(np.isnan(rvs["brack_m2"])):
-        plt.text(
-            0.95,
-            0.95,
-            "nan",
-            horizontalalignment="center",
-            verticalalignment="center",
-            transform=plt.gca().transAxes,
-        )
+        plt.plot(rv["rs"] / 1000, integrand[:, 50], label=ray_id)
 
     plt.tight_layout(pad=0)
 
@@ -1244,12 +1368,43 @@ def compute_F_phi_chi(
     return F_phi, F_chi
 
 
+def compute_lambda_phi(
+    rv: dict,
+    fc: float = 250,
+):
+    wc = 2 * np.pi * fc
+
+    phi2_integrand = (
+        wc**2
+        * rv["mu2"].values[:, None]
+        * rv["L_p"].values[:, None]
+        / (rv["Cray"].values[:, None] ** 2)
+        * np.sqrt(rv["drdt"][:, None] ** 2 + rv["dzdt"][:, None] ** 2)
+    )
+    Phi2 = scipy.integrate.simpson(phi2_integrand, axis=0)
+
+    lam_integrand = (
+        wc**2
+        / Phi2
+        * rv["mu2"].values[:, None]
+        * rv["L_p"].values[:, None]
+        / (rv["Cray"].values[:, None] ** 2)
+        * rv["brack_m2"].values[:, None]
+        * rv["Rf2"].values[:, None]
+        / (2 * np.pi)
+        * np.sqrt(rv["drdt"][:, None] ** 2 + rv["dzdt"][:, None] ** 2)
+    )
+    Lamda = scipy.integrate.simpson(lam_integrand, axis=0)
+
+    return Lamda, Phi2
+
+
 def compute_phase_structure_function(
     rv: dict,
     deltaz_r: np.array,
     fc: float = 250,
 ):
-    """
+    r"""
     Given the ray variables, calculate the phase structure function as a function of vertical seperation $\delta z_r$.
 
     Parameters
@@ -1268,7 +1423,8 @@ def compute_phase_structure_function(
     """
 
     omegac = 2 * np.pi * fc
-    ## Compute vertical coherence at deltaz_r locations
+
+    ## Compute phase structure function at deltaz_r locations
     mj = (
         np.pi
         * rv["j"][None, :, None]
@@ -1276,7 +1432,7 @@ def compute_phase_structure_function(
         / rv["N0B_ray"].values[:, None, None]
     )  # (s,j,1)
     dz_s = rv["RT_zeta_1"][:, None, None] * deltaz_r[None, None, :]  # (s,1,dzr)
-    summand = rv["H"][None, :, None] * (
+    summand = rv["H"].T[:, :, None] * (
         (1 - np.cos(mj * dz_s)) / rv["j"][None, :, None]
     )  # (s,j,dzr)
     # set any nan values to zero
@@ -1300,7 +1456,7 @@ def compute_phase_structure_function(
 
 
 def estimate_mutual_coherence(X, T):
-    """
+    r"""
     Given array X of shape (M,N) containing M snapshots of vector $\\in \\mathbb{R}^N$
         where the vector contains equally spaced samples in dimension that mutual coherence is to be estimated.
 
@@ -1678,11 +1834,11 @@ def create_2D_ocean_slice():
     C_adiabatic_nlm.name = "adiabatic sound speed"
 
     dcdz_p = -C_adiabatic.differentiate("depth")
-    dcdz_p.attrs["units"] = "[m/s^2]"
+    dcdz_p.attrs["units"] = "$m/s^2$"
     dcdz_p.name = "adiabatic vertical sound speed gradient"
 
     dcdz_p_nlm = -C_adiabatic_nlm.differentiate("depth")
-    dcdz_p_nlm.attrs["units"] = "[m/s^2]"
+    dcdz_p_nlm.attrs["units"] = "$m/s^2$"
     dcdz_p_nlm.name = "adiabatic vertical sound speed gradient"
 
     full_field_full = xr.Dataset({
@@ -1752,3 +1908,94 @@ def _fftconvolve_mirror(input_array, kernel, mode="same"):
         return result[slices]
 
     return result
+
+
+def run_rays():
+    """
+    Solve for the ray fan and eigen rays for the forward and backward propagation environment.
+    """
+
+    ## Open Environment
+    fn = f"{os.environ['NESCAFE23_DATADIR']}environment_data/dataproducts/full_field_nlm.nc"
+    envi_field = xr.open_dataset(fn)
+
+    # shift front location
+    front_location = 35e3  # m
+
+    envi_field = envi_field.assign_coords({
+        "range": (envi_field.range.values + front_location)
+    })
+
+    c = envi_field["c"]
+
+    bathy = xr.DataArray(
+        np.linspace(4908, 4908, 100),  # flat bottom
+        dims=["range"],
+        coords={"range": np.linspace(0, 200e3, 100)},
+    )
+
+    envi = pr.OceanEnvironment2D(sound_speed=c, bathymetry=bathy)
+
+    ## Source / Receiver Geometry
+    # TODO do correct source localization
+    source_depth = 2361.50872806
+    source_range = 0
+    launch_angles = np.linspace(-30, 30, 8000)
+    receiver_range = 150404.34909747
+    num_range_save = 1000
+    receiver_depths = [999.37979522]
+
+    ## Forward Rays
+    rays = pr.shoot_rays(
+        source_depth, source_range, launch_angles, receiver_range, num_range_save, envi
+    )
+    eigs = pr.find_eigenrays(
+        rays,
+        receiver_depths,
+        source_depth,
+        source_range,
+        receiver_range,
+        num_range_save,
+        envi,
+        ztol=10,
+        max_iter=500,
+    )
+
+    ## Backward Rays
+    r_back = -1 * (c.range.values - receiver_range)
+    c_back = c.assign_coords({"range": r_back}).sortby("range")
+    envi_back = pr.OceanEnvironment2D(sound_speed=c_back, bathymetry=bathy)
+
+    receiver_depth_back = [source_depth]
+    source_depth_back = receiver_depths[0]
+
+    rays_back = pr.shoot_rays(
+        source_depth_back,
+        source_range,
+        launch_angles,
+        receiver_range,
+        num_range_save,
+        envi_back,
+    )
+    eigs_back = pr.find_eigenrays(
+        rays_back,
+        receiver_depth_back,
+        source_depth_back,
+        source_range,
+        receiver_range,
+        num_range_save,
+        envi_back,
+        ztol=10,
+        max_iter=500,
+    )
+
+    geo = {
+        "source_depth": source_depth,
+        "source_range": source_range,
+        "launch_angles": launch_angles,
+        "receiver_range": receiver_range,
+        "receiver_depths": receiver_depths,
+        "num_range_save": num_range_save,
+    }
+
+    return rays, eigs, rays_back, eigs_back, envi, envi_back, geo

@@ -59,43 +59,40 @@ def initialize_package():
     print(f"✓ Configuration saved to: {env_path}")
 
 
-def check_output_exists(output_path):
+def check_output_exists(*output_paths):
     """
-    Decorator to check if output file exists and handle overwrite logic.
+    Decorator to check if output file(s) exist and handle overwrite logic.
 
     The decorated function must have a `force_overwrite` parameter (bool).
-    The decorator will check if the output file exists and either:
-    - Skip the function if file exists and user doesn't want to overwrite
-    - Run the function if file doesn't exist or user wants to overwrite
+    The decorator will check if the output file(s) exist and either:
+    - Skip the function if any file exists and user doesn't want to overwrite
+    - Run the function if no files exist or user wants to overwrite
 
     Parameters
     ----------
-    output_path : str or callable
-        Path to the output file to check, or a callable that takes the same
-        arguments as the decorated function and returns the path.
-
-    Example
-    -------
-    @check_output_exists(lambda: f"{os.environ['NESCAFE23_DATADIR']}dataproducts/output.pkl")
-    def my_function(force_overwrite=False):
-        # function body
-        pass
+    *output_paths : str or callable
+        One or more paths to output files to check, or callables that take
+        the same arguments as the decorated function and return paths.
     """
 
     def decorator(func):
         @wraps(func)
         def wrapper(*args, force_overwrite=False, **kwargs):
-            # Get the output path
-            if callable(output_path):
-                filepath = output_path(*args, **kwargs)
-            else:
-                filepath = output_path
+            # Collect all output paths
+            filepaths = []
+            for output_path in output_paths:
+                if callable(output_path):
+                    filepath = output_path(*args, **kwargs)
+                else:
+                    filepath = output_path
+                filepaths.append(Path(filepath))
 
-            filepath = Path(filepath)
+            # Check if any files exist
+            existing_files = [fp for fp in filepaths if fp.exists()]
 
-            # Check if file exists and handle overwrite logic
-            if not force_overwrite and filepath.exists():
-                prompt_message = f"Output file already exists:\n{filepath}\nDo you want to overwrite it?"
+            if not force_overwrite and existing_files:
+                files_list = "\n".join(str(fp) for fp in existing_files)
+                prompt_message = f"Output file(s) already exist:\n{files_list}\nDo you want to overwrite them?"
                 should_proceed = questionary.confirm(
                     prompt_message, default=False
                 ).ask()
@@ -132,6 +129,8 @@ def main():
             "compute arrival time offset",
             "estimate peak locations",
             "compute wavefront values",
+            "create 2D ocean slice",
+            "compute rays",
             "exit",
         ],
     ).ask()
@@ -146,6 +145,10 @@ def main():
         estimate_peak_locations()
     elif choice == "compute wavefront values":
         get_wavefront_values()
+    elif choice == "create 2D ocean slice":
+        compute_full_field()
+    elif choice == "compute rays":
+        compute_rays()
     elif choice == "exit":
         print("Goodbye!")
         return
@@ -367,3 +370,56 @@ def get_wavefront_values():
         f"{os.environ['NESCAFE23_DATADIR']}dataproducts/wavefront_values.pkl", "wb"
     ) as f:
         pickle.dump(wavefront_values, f)
+
+
+@check_output_exists(
+    lambda: f"{os.environ['NESCAFE23_DATADIR']}environment_data/dataproducts/full_field.nc",
+    lambda: f"{os.environ['NESCAFE23_DATADIR']}environment_data/dataproducts/full_field_nlm.nc",
+)
+def compute_full_field():
+    fn1 = (
+        f"{os.environ['NESCAFE23_DATADIR']}environment_data/dataproducts/full_field.nc"
+    )
+    fn2 = f"{os.environ['NESCAFE23_DATADIR']}environment_data/dataproducts/full_field_nlm.nc"
+
+    # Delete existing files if they exist to avoid permission issues
+    for fn in [fn1, fn2]:
+        if Path(fn).exists():
+            Path(fn).unlink()
+
+    front_full, front_full_nlm = tools.create_2D_ocean_slice()
+
+    # Use compute=True to force immediate write and close
+    front_full.to_netcdf(fn1, mode="w", compute=True)
+    del front_full  # Release any references
+
+    front_full_nlm.to_netcdf(fn2, mode="w", compute=True)
+    del front_full_nlm
+
+    return
+
+
+@check_output_exists(
+    lambda: f"{os.environ['NESCAFE23_DATADIR']}dataproducts/ray_run_forward_back.pkl"
+)
+def compute_rays():
+    """
+    Compute the forward and backward rays for NESCAFE23 geometry and environment.
+    """
+
+    rays, eigs, rays_back, eigs_back, envi, envi_back, geo = tools.run_rays()
+
+    ray_data = {
+        "rays": rays,
+        "eigs": eigs,
+        "rays_back": rays_back,
+        "eigs_back": eigs_back,
+        "envi": envi,
+        "envi_back": envi_back,
+        "geo": geo,
+    }
+
+    with open(
+        f"{os.environ['NESCAFE23_DATADIR']}dataproducts/ray_run_forward_back.pkl", "wb"
+    ) as f:
+        pickle.dump(ray_data, f)

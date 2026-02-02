@@ -93,6 +93,16 @@ selected within the CLI. To run the CLI type the following in the terminal
 nescafe23-processing
 ```
 
+### CLI Documentation
+
+**Source Localization** The depth and range of the acoustic source is estimated
+with a linear Gauss-Markov approach, based on (Munk et. al. 1995). This method
+is in the process of being published separately, so the code for this is omitted
+from the initial public release of this package. If this code is of interest to
+you, please feel free to reach out to me (John Ragland) directly. The source
+localization option in the CLI will cause an error if called without the
+`src/NESCAFE23_fluctuations/source_localization.py` file.
+
 ## Figures
 
 The figures for publication are generated with Jupyter Notebooks located
@@ -102,12 +112,31 @@ relative to the package structure at `notebooks/publication_figures`.
 
 **TO DO**
 
-- [ ] add script for mixing together sound speeds, currently using
+- [x] add script for mixing together sound speeds, currently using
       'environment_data/dataproducts/full_field_new.nc'
+- [ ] find bugs in source localization code. Currently using best guess of
+      geometry below, which is the first transmission source localization
+
+```python
+source_depth = 2361.50872806
+source_range = 0
+launch_angles = np.linspace(-30, 30, 8000)
+receiver_range = 150404.34909747
+num_range_save = 1000
+receiver_depths = [999.37979522]
+```
+
 - [ ] update calculation of rays with final environment / geometry, etc.
       Currently using 'NESCAFE23_analysis/dataproducts/ray_run_forward_back.pkl'
-      (which is a copy of
       /Users/john/Code/NESCAFE/nescafe_pilot_analysis/wave_statistics/ray_run_forward_back_new_stitch.pkl)
 - [ ] update pygenray to reflect the latest version on pypi, so that everything
       works as expected.
   - right now I just have the local clone installating in the venv
+
+- [ ] Fix $zeta_1$ and $zeta_2$ for +7b, currently the backward raytrace does
+      not find the eigen ray
+
+## References
+
+Munk, W., Worcester, P., and Wunsch, C. (1995). Ocean Acoustic Tomography,
+Cambridge University Press, 457 pages.
