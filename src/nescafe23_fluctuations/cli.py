@@ -387,7 +387,8 @@ def compute_full_field():
         if Path(fn).exists():
             Path(fn).unlink()
 
-    front_full, front_full_nlm = tools.create_2D_ocean_slice()
+    front_full = tools.create_2D_ocean_slice()
+    front_full_nlm = tools.create_2D_ocean_slice_nlm()
 
     # Use compute=True to force immediate write and close
     front_full.to_netcdf(fn1, mode="w", compute=True)
