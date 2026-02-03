@@ -833,6 +833,8 @@ def compute_ray_path_variables(
     )
     Rf2 = np.abs(Rf2)
 
+    wronk = (RT_zeta_1 * dzeta2) - (RT_zeta_2 * dzeta1)
+
     # convert to xarray DataArray
     Rf2 = xr.DataArray(Rf2, dims=["s"], coords={"s": Cray.coords["s"]})
     Rf2.name = "$R_f^2$"
@@ -887,6 +889,7 @@ def compute_ray_path_variables(
         "m_hi_max": m_hi_max,
         "rh_forward": ray_hat_forward,
         "rh_backward": ray_hat_backward,
+        "wronk": wronk,
     }
 
     return ray_variables
@@ -1037,7 +1040,11 @@ def compute_n23_ray_variables(
     return rvs
 
 
-def plot_ray_variables(rvs: dict, ray_ids: list, pair_idx: int = 0):
+def plot_ray_variables(
+    rvs: dict,
+    ray_ids: list,
+    pair_idxs: dict | None = None,
+):
     """
     Given ray variables calculated with `compute_ray_path_variables`, generate plot summarizing them.
 
@@ -1047,223 +1054,256 @@ def plot_ray_variables(rvs: dict, ray_ids: list, pair_idx: int = 0):
         dictionary containing ray variables as output from `compute_ray_path_variables`
     ray_ids : list
         ray identifier (number of ray turning points with sign of launch angle)
-    pair_idx : int, optional
-        index of ray pair to plot the ray variables for
+    pair_idxs : dict, optional
+        indices of ray pairs to plot the ray variables for. keys are ray_ids. If not provided, defaults to first pair for each ray_id.
     Returns
     -------
     fig : matplotlib.figure.Figure
         figure containing the ray variable plots
     """
+    if pair_idxs is None:
+        pair_idxs = dict(
+            zip(list(EIG_INDEXS.keys()), [[0]] * len(EIG_INDEXS), strict=False)
+        )
+
     fig, axs = plt.subplots(3, 4, figsize=(13, 10))
 
     fig.suptitle(f"Ray IDs: {', '.join(ray_ids)}", fontweight="bold")
     axs = axs.flatten()
 
     for i, ray_id in enumerate(ray_ids):
-        rv = rvs[ray_id][pair_idx]
-        ## Sound Speed
-        plt.sca(axs[0])
-        if i == 0:
-            rv["envi"].plot()
+        for n, pair_idx in enumerate(pair_idxs[ray_id]):
+            rv = rvs[ray_id][pair_idx]
+            ## Sound Speed
+            plt.sca(axs[0])
+            if (i == 0) & (n == 0):
+                rv["envi"].plot()
+                plt.xlim([0, rv["receiver_range"]])
+            else:
+                pass
+
+            plt.plot(rv["rs"], -rv["zs"], label=ray_id)
+            plt.ylim([5000, 0])
+            plt.title("Eigenray Path")
+            plt.xlabel("range [km]")
+            plt.ylabel("depth [m]")
+            # plt.legend()
+
+            ## Buoyancy Frequency
+            plt.sca(axs[1])
+            if (i == 0) & (n == 0):
+                rv["N"].plot(x="range", vmin=0, vmax=0.03)
+            else:
+                pass
+
             plt.xlim([0, rv["receiver_range"]])
-        else:
-            pass
+            plt.ylim([5000, 0])
 
-        ## Buoyancy Frequency
-        plt.sca(axs[1])
-        if i == 0:
-            rv["N"].plot(x="range", vmin=0, vmax=0.03)
-        else:
-            pass
+            plt.plot(rv["rs"], -rv["zs"], label=ray_id)
+            plt.ylim([5000, 0])
+            plt.title("Eigenray Path")
+            plt.xlabel("range [km]")
+            plt.ylabel("depth [m]")
+            # plt.legend()
 
-        plt.xlim([0, rv["receiver_range"]])
-        plt.ylim([5000, 0])
+            ## Ray Paths
+            # plt.sca(axs[2])
+            # plt.plot(rv["rs"] / 1000, -rv["zs"], label=ray_id)
+            # plt.ylim([5000, 0])
+            # plt.title("Eigenray Path")
+            # plt.xlabel("range [km]")
+            # plt.ylabel("depth [m]")
+            # plt.legend()
 
-        ## Ray Path
-        plt.sca(axs[2])
-        plt.plot(rv["rs"] / 1000, -rv["zs"], label=ray_id)
-        plt.ylim([5000, 0])
-        plt.title("Eigenray Path")
-        plt.xlabel("range [km]")
-        plt.ylabel("depth [m]")
-        plt.legend()
+            ## Wronksian
+            plt.sca(axs[2])
+            plt.plot(rv["rs"] / 1000, np.abs(rv["wronk"]))
+            plt.xlabel("range [km]")
+            plt.title("$\\zeta_1 \\partial_x \\zeta_2 - \\zeta_2 \\partial_x \\zeta_1$")
 
-        ## N0B
-        plt.sca(axs[3])
-        plt.plot(rv["N0B_ray"].range / 1000, rv["N0B_ray"])
-        plt.xlabel("range [km]")
-        plt.ylabel("[rad m/s]")
-        plt.title("$N_0 B(r)$")
-        if np.any(np.isnan(rv["N0B_ray"])):
-            plt.text(
-                0.95,
-                0.95,
-                "nan",
-                horizontalalignment="center",
-                verticalalignment="center",
-                transform=plt.gca().transAxes,
+            ## N0B
+            plt.sca(axs[3])
+            plt.plot(rv["N0B_ray"].range / 1000, rv["N0B_ray"])
+            plt.xlabel("range [km]")
+            plt.ylabel("[rad m/s]")
+            plt.title("$N_0 B(r)$")
+            if np.any(np.isnan(rv["N0B_ray"])):
+                plt.text(
+                    0.95,
+                    0.95,
+                    "nan",
+                    horizontalalignment="center",
+                    verticalalignment="center",
+                    transform=plt.gca().transAxes,
+                )
+
+            ## <mu^2>
+            plt.sca(axs[4])
+            plt.plot(rv["mu2"].range / 1000, rv["mu2"])
+            plt.title("$\\langle \\mu^2(z) \\rangle$")
+            plt.xlabel("range [km]")
+            if np.any(np.isnan(rv["mu2"])):
+                plt.text(
+                    0.95,
+                    0.95,
+                    "nan",
+                    horizontalalignment="center",
+                    verticalalignment="center",
+                    transform=plt.gca().transAxes,
+                )
+
+            ## a
+            plt.sca(axs[5])
+            plt.plot(rv["rs"] / 1000, rv["a"])
+            plt.xlabel("range [km]")
+            plt.title("$a$")
+
+            if np.any(np.isnan(rv["a"])):
+                plt.text(
+                    0.95,
+                    0.95,
+                    "nan",
+                    horizontalalignment="center",
+                    verticalalignment="center",
+                    transform=plt.gca().transAxes,
+                )
+
+            ## Lp
+            plt.sca(axs[6])
+            plt.plot(rv["rs"] / 1000, rv["L_p"].values)
+            plt.yscale("log")
+            plt.xlabel("range [km]")
+            plt.ylabel("$L_p$ [m]")
+            plt.title("$L_p$ [m]")
+
+            if np.any(np.isnan(rv["L_p"].values)):
+                plt.text(
+                    0.95,
+                    0.95,
+                    "nan",
+                    horizontalalignment="center",
+                    verticalalignment="center",
+                    transform=plt.gca().transAxes,
+                )
+
+            ## RT_zeta_1 and RT_zeta_2
+            plt.sca(axs[7])
+            plt.plot(rv["rs"] / 1000, rv["RT_zeta_1"], label="$\\zeta_1$")
+            # plt.plot(rv["rs"] / 1000, rv["RT_zeta_2"], label="$\\zeta_2$")
+            plt.xlabel("range [km]")
+            plt.title("$\\zeta_1$ and $\\zeta_2$")
+            plt.legend(ncols=4)
+            plt.grid()
+
+            if np.any(np.isnan(rv["RT_zeta_1"])) and not np.any(
+                np.isnan(rv["RT_zeta_2"])
+            ):
+                plt.text(
+                    0.95,
+                    0.95,
+                    "nan",
+                    horizontalalignment="center",
+                    verticalalignment="center",
+                    transform=plt.gca().transAxes,
+                )
+
+            ## Rf^2
+            plt.sca(axs[8])
+            plt.plot(rv["rs"] / 1000, rv["Rf2"])
+            plt.xlabel("range [km]")
+            plt.title("$R_f^2$ [$m^2$]")
+            plt.ylabel("$R_f^2$ [$m^2$]")
+
+            if np.any(np.isnan(rv["Rf2"])):
+                plt.text(
+                    0.95,
+                    0.95,
+                    "nan",
+                    horizontalalignment="center",
+                    verticalalignment="center",
+                    transform=plt.gca().transAxes,
+                )
+
+            ## {m^2}
+            plt.sca(axs[9])
+            plt.plot(rv["rs"] / 1000, rv["brack_m2"])
+            plt.xlabel("range [km]")
+            plt.title(r"{ $m^2(z)$ }")
+
+            if np.any(np.isnan(rv["brack_m2"])):
+                plt.text(
+                    0.95,
+                    0.95,
+                    "nan",
+                    horizontalalignment="center",
+                    verticalalignment="center",
+                    transform=plt.gca().transAxes,
+                )
+
+            ## $ cos(m(j)) $\Delta z(s)$
+            plt.sca(axs[10])
+            mj = (
+                np.pi
+                * rv["j"][None, :, None]
+                * rv["Nray"].values[:, None, None]
+                / rv["N0B_ray"].values[:, None, None]
+            )  # (s,j,1)
+            summand = rv["H"].T[:, :, None] * (
+                1
+                - np.cos(mj * rv["RT_zeta_1"][:, None, None] * 250)
+                / rv["j"][None, :, None]
+            )  # (s,j,dzr)
+            # set any nan values to zero
+            summand = np.where(np.isfinite(summand), summand, 0)
+
+            # plt.plot(rv['rs'] / 1000, summand[:,:,0], alpha=0.1, lw=1, c='k')
+
+            # if i == 0:
+            #    axtwin = plt.gca().twinx()
+            # plt.sca(axtwin)
+
+            plt.plot(rv["rs"] / 1000, np.nansum(summand[:, :, 0], axis=1), lw=2)
+
+            plt.title(
+                "$\\cos(m(j) \\zeta_1(s) \\Delta z_r(s)$\nfor $j=1,2,...,M$ and $\\Delta z_r = 250$ [ m ]"
             )
 
-        ## <mu^2>
-        plt.sca(axs[4])
-        plt.plot(rv["mu2"].range / 1000, rv["mu2"])
-        plt.title("$\\langle \\mu^2(z) \\rangle$")
-        plt.xlabel("range [km]")
-        if np.any(np.isnan(rv["mu2"])):
-            plt.text(
-                0.95,
-                0.95,
-                "nan",
-                horizontalalignment="center",
-                verticalalignment="center",
-                transform=plt.gca().transAxes,
-            )
+            plt.sca(axs[11])
+            omegac = 2 * np.pi * 250
 
-        ## a
-        plt.sca(axs[5])
-        plt.plot(rv["rs"] / 1000, rv["a"])
-        plt.xlabel("range [km]")
-        plt.title("$a$")
+            deltaz_r = np.linspace(0, 500, 100)
 
-        if np.any(np.isnan(rv["a"])):
-            plt.text(
-                0.95,
-                0.95,
-                "nan",
-                horizontalalignment="center",
-                verticalalignment="center",
-                transform=plt.gca().transAxes,
-            )
+            ## Compute vertical coherence at deltaz_r locations
+            mj = (
+                np.pi
+                * rv["j"][None, :, None]
+                * rv["Nray"].values[:, None, None]
+                / rv["N0B_ray"].values[:, None, None]
+            )  # (s,j,1)
+            dz_s = rv["RT_zeta_1"][:, None, None] * deltaz_r[None, None, :]  # (s,1,dzr)
+            summand = rv["H"].T[:, :, None] * (
+                (1 - np.cos(mj * dz_s)) / rv["j"][None, :, None]
+            )  # (s,j,dzr)
+            # set any nan values to zero
+            summand = np.where(np.isfinite(summand), summand, 0)
 
-        ## Lp
-        plt.sca(axs[6])
-        plt.plot(rv["rs"] / 1000, rv["L_p"].values)
-        plt.yscale("log")
-        plt.xlabel("range [km]")
-        plt.ylabel("$L_p$ [m]")
-        plt.title("$L_p$ [m]")
+            integrand1 = (
+                2
+                * omegac**2
+                * rv["mu2"]
+                * rv["L_p"]
+                / (rv["Cray"] ** 2 + rv["mean_jn1"])
+            ).values
+            integrand = (
+                integrand1[:, None]
+                * np.sum(summand, axis=1)
+                * np.sqrt(rv["drdt"] ** 2 + rv["dzdt"] ** 2)[:, None]
+            )  # (s,dzr)
 
-        if np.any(np.isnan(rv["L_p"].values)):
-            plt.text(
-                0.95,
-                0.95,
-                "nan",
-                horizontalalignment="center",
-                verticalalignment="center",
-                transform=plt.gca().transAxes,
-            )
+            # set any nan values to zero
+            integrand = np.where(np.isfinite(integrand), integrand, 0)
 
-        ## RT_zeta_1 and RT_zeta_2
-        plt.sca(axs[7])
-        plt.plot(rv["rs"] / 1000, rv["RT_zeta_1"], label="$\\zeta_1$")
-        # plt.plot(rv["rs"] / 1000, rv["RT_zeta_2"], label="$\\zeta_2$")
-        plt.xlabel("range [km]")
-        plt.title("$\\zeta_1$ and $\\zeta_2$")
-        plt.legend()
-        plt.grid()
-
-        if np.any(np.isnan(rv["RT_zeta_1"])) and not np.any(np.isnan(rv["RT_zeta_2"])):
-            plt.text(
-                0.95,
-                0.95,
-                "nan",
-                horizontalalignment="center",
-                verticalalignment="center",
-                transform=plt.gca().transAxes,
-            )
-
-        ## Rf^2
-        plt.sca(axs[8])
-        plt.plot(rv["rs"] / 1000, rv["Rf2"])
-        plt.xlabel("range [km]")
-        plt.title("$R_f^2$ [$m^2$]")
-        plt.ylabel("$R_f^2$ [$m^2$]")
-
-        if np.any(np.isnan(rv["Rf2"])):
-            plt.text(
-                0.95,
-                0.95,
-                "nan",
-                horizontalalignment="center",
-                verticalalignment="center",
-                transform=plt.gca().transAxes,
-            )
-
-        ## {m^2}
-        plt.sca(axs[9])
-        plt.plot(rv["rs"] / 1000, rv["brack_m2"])
-        plt.xlabel("range [km]")
-        plt.title(r"{ $m^2(z)$ }")
-
-        if np.any(np.isnan(rv["brack_m2"])):
-            plt.text(
-                0.95,
-                0.95,
-                "nan",
-                horizontalalignment="center",
-                verticalalignment="center",
-                transform=plt.gca().transAxes,
-            )
-
-        ## $ cos(m(j)) $\Delta z(s)$
-        plt.sca(axs[10])
-        mj = (
-            np.pi
-            * rv["j"][None, :, None]
-            * rv["Nray"].values[:, None, None]
-            / rv["N0B_ray"].values[:, None, None]
-        )  # (s,j,1)
-        summand = rv["H"].T[:, :, None] * (
-            1
-            - np.cos(mj * rv["RT_zeta_1"][:, None, None] * 250) / rv["j"][None, :, None]
-        )  # (s,j,dzr)
-        # set any nan values to zero
-        summand = np.where(np.isfinite(summand), summand, 0)
-
-        # plt.plot(rv['rs'] / 1000, summand[:,:,0], alpha=0.1, lw=1, c='k')
-
-        if i == 0:
-            axtwin = plt.gca().twinx()
-        plt.sca(axtwin)
-
-        plt.plot(rv["rs"] / 1000, np.nansum(summand[:, :, 0], axis=1), lw=2)
-
-        plt.title(
-            "$\\cos(m(j) \\zeta_1(s) \\Delta z_r(s)$\nfor $j=1,2,...,M$ and $\\Delta z_r = 250$ [ m ]"
-        )
-
-        plt.sca(axs[11])
-        omegac = 2 * np.pi * 250
-
-        deltaz_r = np.linspace(0, 500, 100)
-
-        ## Compute vertical coherence at deltaz_r locations
-        mj = (
-            np.pi
-            * rv["j"][None, :, None]
-            * rv["Nray"].values[:, None, None]
-            / rv["N0B_ray"].values[:, None, None]
-        )  # (s,j,1)
-        dz_s = rv["RT_zeta_1"][:, None, None] * deltaz_r[None, None, :]  # (s,1,dzr)
-        summand = rv["H"].T[:, :, None] * (
-            (1 - np.cos(mj * dz_s)) / rv["j"][None, :, None]
-        )  # (s,j,dzr)
-        # set any nan values to zero
-        summand = np.where(np.isfinite(summand), summand, 0)
-
-        integrand1 = (
-            2 * omegac**2 * rv["mu2"] * rv["L_p"] / (rv["Cray"] ** 2 + rv["mean_jn1"])
-        ).values
-        integrand = (
-            integrand1[:, None]
-            * np.sum(summand, axis=1)
-            * np.sqrt(rv["drdt"] ** 2 + rv["dzdt"] ** 2)[:, None]
-        )  # (s,dzr)
-
-        # set any nan values to zero
-        integrand = np.where(np.isfinite(integrand), integrand, 0)
-
-        plt.plot(rv["rs"] / 1000, integrand[:, 50], label=ray_id)
+            plt.plot(rv["rs"] / 1000, integrand[:, 50], label=ray_id)
 
     plt.tight_layout(pad=0)
 
@@ -1506,9 +1546,19 @@ def estimate_mutual_coherence(X, T):
     return t, MC, MC_var
 
 
-def create_2D_ocean_slice():
+def create_2D_ocean_slice(
+    z_smooth: float = 200,
+    r_smooth: float = 3000,
+):
     """
     Create 2D ocean slice using FCTD, and two full water CTD casts.
+
+    Parameters
+    ----------
+    z_smooth : float
+        vertical smoothing scale in meters. Default is 200 m.
+    r_smooth : float
+        horizontal smoothing scale in meters. Default is 3000 m.
 
     Returns
     -------
@@ -1561,14 +1611,11 @@ def create_2D_ocean_slice():
 
     fctds_pilot = xr.Dataset(fctds_pilot)
 
-    # interpolate to Δr=200m, Δz = 3km
+    # interpolate to Δz=1m, Δr = 500
     fctd_grid = fctds_pilot.interp({
         "range": np.arange(0, fctds_pilot.range[-1], 500),
         "depth": np.arange(0, 6000),
     })
-
-    r_smooth = 3000
-    z_smooth = 200
 
     bz, az = signal.butter(4, 1 / z_smooth, fs=1)
     br, ar = signal.butter(4, 1 / r_smooth, fs=1 / 500)
