@@ -104,17 +104,17 @@ PEAK_BBOXS = {
 
 EIG_INDEXS = {
     "+7": [(0, 0), (1, 1)],
-    "-7": [(0, 2), (1, 1), (2, 0)],
+    "-7": [(0, 0)],
     "-6": [(0, 0)],
     "+6": [(0, 0)],
-    "-5b": [(0, 0), (1, 1)],
+    "-5b": [(0, 0)],
     "-6b": [(0, 0)],
     "+6b": [(0, 0)],
     "+7b": [(0, 0)],
     "-7b": [(0, 0)],
     "-8b": [(0, 0)],
     "+8b": [(0, 0)],
-    "+9b": [(1, 0)],
+    "+9b": [(0, 0)],
     "-9b": [(0, 0)],
     "-10b": [(0, 0)],
     "+10b": [(0, 0)],
@@ -683,17 +683,17 @@ def compute_ray_path_variables(
     # Convert backward ray_id to pr format
     ray_id_pr_back, _ = parse_ray_id(ray_id_back)
 
-    try:
-        ray_idx_forward = np.where(eigs.ray_id[0] == ray_id_pr)[0][eig_idx_forward]
-    except IndexError:
-        ray_idx_forward = np.where(eigs.ray_id[0] == ray_id_pr)[0]
+    ray_idx_forward = np.where(eigs.ray_id[0] == ray_id_pr)[0][eig_idx_forward]
+    ray_idx_backward = np.where(eigs_backward.ray_id[0] == ray_id_pr_back)[0][
+        eig_idx_backward
+    ]
 
-    try:
-        ray_idx_backward = np.where(eigs_backward.ray_id[0] == ray_id_pr_back)[0][
-            eig_idx_backward
-        ]
-    except IndexError:
-        ray_idx_backward = np.where(eigs_backward.ray_id[0] == ray_id_pr_back)[0]
+    # Removing exception handling
+    # except IndexError:
+    #    ray_idx_forward = np.where(eigs.ray_id[0] == ray_id_pr)[0][0]
+
+    # except IndexError:
+    #    ray_idx_backward = np.where(eigs_backward.ray_id[0] == ray_id_pr_back)[0]
 
     # get the range and depth vectors along the eigenray
     rs = eigs.rs[0][ray_idx_forward, :].flatten()
@@ -902,6 +902,8 @@ def compute_n23_ray_variables(
     zeta0: float = 7.3,  # m 1GM energy
     N0: float = 3 * (2 * np.pi) / 3600,  # [rad/s], 3 cph
     ray_ids: list | None = None,
+    envi_field: xr.Dataset | None = None,
+    ray_run: dict | None = None,
 ):
     """
     Compute the ray path variables for the nescafe23 environment.
@@ -919,6 +921,10 @@ def compute_n23_ray_variables(
         reference buoyancy frequency of GM spectrum [rad/s], Default is 3 cph
     ray_ids : list
         list of ray identifier strings (e.g., '-7', '+10b'). If None, use all ray IDs in EIG_INDEXS.
+    envi_field : xr.Dataset, optional
+        xarray dataset of the environment, generated with `create_2D_ocean_slice`. If None, load from pre-computed data (generated from CLI)
+    ray_run : dict, optional
+        dictionary containing ray run data, generated with `run_rays`. If None, load from pre-computed data (generated from CLI)
 
     Returns
     -------
@@ -959,7 +965,8 @@ def compute_n23_ray_variables(
     # open environments
     fn1 = f"{os.environ['NESCAFE23_DATADIR']}environment_data/dataproducts/full_field_nlm.nc"
 
-    envi_field = xr.open_dataset(fn1)
+    if envi_field is None:
+        envi_field = xr.open_dataset(fn1)
 
     # shift front location
     front_location = 35e3
@@ -968,6 +975,7 @@ def compute_n23_ray_variables(
         "range": (envi_field.range.values + front_location)
     })
 
+    print(envi_field.range[0])
     c = envi_field["c"]
     dcdz_p = envi_field["dcdz_p"]
 
@@ -989,8 +997,9 @@ def compute_n23_ray_variables(
 
     fn = f"{os.environ['NESCAFE23_DATADIR']}dataproducts/ray_run_forward_back.pkl"
 
-    with open(fn, "rb") as f:
-        ray_run = pickle.load(f)
+    if ray_run is None:
+        with open(fn, "rb") as f:
+            ray_run = pickle.load(f)
 
     eigs = ray_run["eigs"]
     eigs_back = ray_run["eigs_back"]
@@ -1015,7 +1024,6 @@ def compute_n23_ray_variables(
         for n in range(len(EIG_INDEXS[ray_id])):
             if n == 0:
                 rvs[ray_id] = []
-
             rvs[ray_id].append(
                 compute_ray_path_variables(
                     ray_id,
@@ -1066,7 +1074,7 @@ def plot_ray_variables(
             zip(list(EIG_INDEXS.keys()), [[0]] * len(EIG_INDEXS), strict=False)
         )
 
-    fig, axs = plt.subplots(3, 4, figsize=(13, 10))
+    fig, axs = plt.subplots(3, 4, figsize=(16, 10))
 
     fig.suptitle(f"Ray IDs: {', '.join(ray_ids)}", fontweight="bold")
     axs = axs.flatten()
@@ -1304,6 +1312,7 @@ def plot_ray_variables(
             integrand = np.where(np.isfinite(integrand), integrand, 0)
 
             plt.plot(rv["rs"] / 1000, integrand[:, 50], label=ray_id)
+            plt.title("Integrad for D")
 
     plt.tight_layout(pad=0)
 
@@ -2201,21 +2210,59 @@ def _fftconvolve_mirror(input_array, kernel, mode="same"):
 
 def run_rays(
     envi_field: xr.Dataset | None = None,
-    num_rays: int = 8000,
+    num_rays: int | None = None,
+    source_depth: float | None = None,
+    receiver_range: float | None = None,
+    receiver_depths: list | None = None,
 ):
     """
     Solve for the ray fan and eigen rays for the forward and backward propagation environment.
 
+    Default values for source/receiver geometry are from source localization using stitched environment.
+    TODO
     Parameters
     ----------
     envi_field : xarray.Dataset, optional
         xarray Dataset containing 2D ocean slice. If None, will open pre-computed environment
     num_rays : int
         Number of rays to shoot in the ray fan. Default is 8000.
+    source_depth : float
+        Source depth in meters. Default is 2361.50872806 m.
+    receiver_range : float
+        Receiver range in meters. Default is 150404.34909747 m.
+    receiver_depths : list of float
+        List of receiver depths in meters. Default is [999.37979522] m.
+
+    Returns
+    -------
+    rays : pr.RayFan
+        Forward ray fan
+    eigs : pr.Eigenrays
+        Forward eigenrays
+    rays_back : pr.RayFan
+        Backward ray fan
+    eigs_back : pr.Eigenrays
+        Backward eigenrays
+    envi : pr.OceanEnvironment2D
+        Forward ocean environment
+    envi_back : pr.OceanEnvironment2D
+        Backward ocean environment
+    geo : dict
+        Dictionary containing source/receiver geometry
     """
 
+    # create default values for geometry
+    if num_rays is None:
+        num_rays = 8000
+    if source_depth is None:
+        source_depth = 2300
+    if receiver_range is None:
+        receiver_range = 150000
+    if receiver_depths is None:
+        receiver_depths = [1000]
+
     ## Open Environment
-    fn = f"{os.environ['NESCAFE23_DATADIR']}environment_data/dataproducts/full_field_nlm.nc"
+    fn = f"{os.environ['NESCAFE23_DATADIR']}environment_data/dataproducts/full_field.nc"
     if envi_field is None:
         envi_field = xr.open_dataset(fn)
 
@@ -2237,13 +2284,11 @@ def run_rays(
     envi = pr.OceanEnvironment2D(sound_speed=c, bathymetry=bathy)
 
     ## Source / Receiver Geometry
+
     # TODO do correct source localization
-    source_depth = 2361.50872806
     source_range = 0
     launch_angles = np.linspace(-30, 30, num_rays)
-    receiver_range = 150404.34909747
     num_range_save = 1000
-    receiver_depths = [999.37979522]
 
     ## Forward Rays
     rays = pr.shoot_rays(
@@ -2299,3 +2344,247 @@ def run_rays(
     }
 
     return rays, eigs, rays_back, eigs_back, envi, envi_back, geo
+
+
+def compute_filtered_fctd_grid(
+    z_smooth: float = 200,
+    r_smooth: float = 3000,
+):
+    """
+    Compute and filter FCTD grid data without slicing or stitching.
+
+    This function loads FCTD data, interpolates it to a regular grid,
+    applies butterworth filters in both vertical and horizontal directions,
+    flips the range coordinate (centered at 115000m of original range),
+    and computes oceanographic variables using GSW.
+
+    Parameters
+    ----------
+    z_smooth : float
+        vertical smoothing scale in meters. Default is 200 m.
+    r_smooth : float
+        horizontal smoothing scale in meters. Default is 3000 m.
+
+    Returns
+    -------
+    fctd_output : xarray.Dataset
+        xarray Dataset containing filtered FCTD data with oceanographic variables:
+        - t: in-situ temperature (deg C)
+        - SP: practical salinity (psu)
+        - c: sound speed (m/s)
+        - N: buoyancy frequency (cph)
+        - SA: absolute salinity (g/kg)
+        - dcdz_p: adiabatic vertical sound speed gradient (m/s^2)
+    """
+    fn = f"{os.environ['NESCAFE23_DATADIR']}environment_data/FCTD_SoundSpeed_Colosi_v2.mat"
+    fctd_mat = io.loadmat(fn)
+
+    fctds = {}
+    fctds_pilot = {}
+
+    deep_value = {"tt": 2.3, "ss": 34.885}
+
+    for k, var in enumerate(["tt", "ss"]):
+        fctds[var] = xr.DataArray(
+            fctd_mat[var],
+            dims=["range", "depth"],
+            coords={
+                "range": fctd_mat["r"].flatten() * 1000,
+                "depth": fctd_mat["z"].flatten(),
+                "latitude": ("range", fctd_mat["lat"].flatten()),
+                "longitude": ("range", fctd_mat["lon"].flatten()),
+            },
+        ).sortby("range")
+
+        # Add 10000 meter
+        fctds_pilot[var] = xr.concat(
+            (
+                fctds[var],
+                xr.ones_like(fctds[var][:, -2:-1]).assign_coords({"depth": [10000]})
+                * deep_value[var],
+            ),
+            dim="depth",
+        )
+
+    fctds_pilot = xr.Dataset(fctds_pilot)
+
+    # interpolate to Δz=1m, Δr = 500
+    fctd_grid = fctds_pilot.interp({
+        "range": np.arange(0, fctds_pilot.range[-1], 500),
+        "depth": np.arange(0, 6000),
+    })
+
+    # Create butterworth filters
+    bz, az = signal.butter(4, 1 / z_smooth, fs=1)
+    br, ar = signal.butter(4, 1 / r_smooth, fs=1 / 500)
+
+    # Apply filters to both variables
+    fctd_filtered = {}
+    for k, var in enumerate(["tt", "ss"]):
+        fctd_smooth = xrs.filtfilt(
+            xrs.filtfilt(fctd_grid[var], dim="range", b=br, a=ar),
+            dim="depth",
+            b=bz,
+            a=az,
+        )
+        fctd_filtered[var] = fctd_smooth
+
+    fctd_filtered = xr.Dataset(fctd_filtered)
+
+    # Drop latitude and longitude if they exist
+    if "latitude" in fctd_filtered.coords:
+        fctd_filtered = fctd_filtered.drop_vars(["latitude", "longitude"])
+
+    # Add attributes
+    fctd_filtered["tt"].attrs["units"] = "deg C"
+    fctd_filtered["tt"].name = "in-situ temperature"
+
+    fctd_filtered["ss"].attrs["units"] = "psu"
+    fctd_filtered["ss"].name = "practical salinity"
+
+    # Compute oceanographic variables
+    coords = {
+        "SION": [39 + 37.194 / 60, -63 - 39.427 / 60],
+    }
+
+    # Transpose to [depth, range] for GSW calculations
+    fctd_transposed = fctd_filtered.transpose("depth", "range")
+
+    p = gsw.p_from_z(-fctd_transposed.depth, coords["SION"][0])
+
+    # Absolute Salinity
+    SA = gsw.SA_from_SP(fctd_transposed["ss"], p, coords["SION"][1], coords["SION"][0])
+    SA.attrs["units"] = "g/kg"
+    SA.name = "Absolute Salinity"
+
+    # Conservative Temperature
+    CT = gsw.CT_from_t(SA, fctd_transposed["tt"], p)
+    CT.attrs["units"] = "deg C"
+    CT.name = "Conservative Temperature"
+
+    # Sound Speed
+    c = aog_vsdg(p, fctd_transposed["tt"], fctd_transposed["ss"])
+    c.attrs["units"] = "m/s"
+    c.name = "Sound Speed"
+
+    # Buoyancy Frequency
+    N2, pmid = gsw.Nsquared(SA, CT, p.values[:, None], lat=coords["SION"][0], axis=0)
+    z_mid = gsw.z_from_p(pmid, coords["SION"][0])[:, 0]
+    N2x = xr.DataArray(
+        N2,
+        dims=["depth", "range"],
+        coords={"depth": -z_mid, "range": fctd_transposed.range},
+    )
+    N = (
+        np.sqrt(
+            N2x.interp(
+                {"depth": fctd_transposed.depth},
+                kwargs={"bounds_error": False, "fill_value": "extrapolate"},
+            )
+        )
+        / (2 * np.pi)
+        * 3600
+    )
+    N.attrs["units"] = "cph"
+    N.name = "Buoyancy Frequency"
+
+    # Potential Temperature
+    PT = gsw.pt_from_t(SA, fctd_transposed["tt"], p, 0)
+    PT.attrs["units"] = "deg C"
+    PT.name = "potential temperature"
+
+    # Adiabatic Sound Speed Gradient
+    C_adiabatic = aog_vsdg(0, PT, fctd_transposed["ss"])
+    C_adiabatic.attrs["units"] = "deg C"
+    C_adiabatic.name = "adiabatic sound speed"
+
+    dcdz_p = -C_adiabatic.differentiate("depth")
+    dcdz_p.attrs["units"] = "$m/s^2$"
+    dcdz_p.name = "adiabatic vertical sound speed gradient"
+
+    # Create final dataset with all oceanographic variables
+    fctd_output = xr.Dataset({
+        "t": fctd_transposed["tt"],
+        "SP": fctd_transposed["ss"],
+        "c": c,
+        "N": N,
+        "SA": SA,
+        "dcdz_p": dcdz_p,
+    })
+
+    # center on front and flip range coord
+    fctd_centered = fctd_output.assign_coords({
+        "range": 115000 - fctd_output.range.values
+    }).sortby("range")
+
+    # extend FCTD to range of +/-300 km by repeating edge values
+    fctd_centered = xr.concat(
+        (
+            fctd_centered,
+            fctd_centered.isel({"range": -1}).assign_coords({"range": 300000}),
+        ),
+        dim="range",
+    )
+    fctd_centered = xr.concat(
+        (
+            fctd_centered.isel({"range": 0}).assign_coords({"range": -300000}),
+            fctd_centered,
+        ),
+        dim="range",
+    )
+
+    return fctd_centered
+
+
+def compute_mean_pulse():
+    """
+    Compute the mean pulse and mean pulse noise for the 23 receptions
+    """
+    dss = open_receptions()
+
+    dss_interp = []
+    dss_upper_interp = []
+    for ds in tqdm(dss):
+        dss_interp.append(
+            np.abs(
+                ds.swap_dims({"hydrophone": "actual_depth"})
+                .rename({"actual_depth": "depth"})[32:]
+                .interp({
+                    "depth": np.linspace(800, 1400, 50),
+                    "time": dss[0].time.values,
+                })
+                .drop_vars(["nominal_depth"])
+            )
+        )
+
+        dss_upper_interp.append(
+            np.abs(
+                ds.swap_dims({"hydrophone": "actual_depth"})
+                .rename({"actual_depth": "depth"})[:32]
+                .interp({
+                    "depth": np.linspace(100, 600, 50),
+                    "time": dss[0].time.values,
+                })
+                .drop_vars(["nominal_depth"])
+            )
+        )
+
+    ds_interp = xr.concat(dss_interp, dim="Tx")
+    ds_interp_upper = xr.concat(dss_upper_interp, dim="Tx")
+
+    mean_pulse_upper = ds_interp_upper.mean(dim="Tx")
+    mean_pulse_lower = ds_interp.mean(dim="Tx")
+
+    mean_pulse_upper_noise = 20 * np.log10(
+        np.sqrt((mean_pulse_upper.sel({"time": slice(90, 95)}) ** 2).mean(dim="time"))
+    )
+    mean_pulse_lower_noise = 20 * np.log10(
+        np.sqrt((mean_pulse_lower.sel({"time": slice(90, 95)}) ** 2).mean(dim="time"))
+    )
+
+    return (
+        mean_pulse_lower,
+        mean_pulse_upper,
+        mean_pulse_lower_noise,
+        mean_pulse_upper_noise,
+    )

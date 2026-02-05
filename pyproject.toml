@@ -37,11 +37,13 @@ dependencies = [
   "cmocean",
   "seaborn",
   "gsw",
-  "geopy"
+  "geopy",
+  "panel"
 ]
 
 [project.scripts]
 nescafe23_processing = "nescafe23_fluctuations.cli:main"
+nescafe23_panel = "nescafe23_fluctuations.cli:serve_panel_apps"
 
 [project.urls]
 Homepage = "https://github.com/John-Ragland/NESCAFE23_fluctuations"

@@ -103,6 +103,26 @@ you, please feel free to reach out to me (John Ragland) directly. The source
 localization option in the CLI will cause an error if called without the
 `src/NESCAFE23_fluctuations/source_localization.py` file.
 
+**Source Geometry Sweep** The exact source location is unknown, because the
+mooring was lost. For this paper, the source geometry is chosen based on the
+best match of rays through the FCTD and the lineup of the ducted arrivals and
+first boundary reflected arrivals. A more rigorous approach that makes uses a
+Gauss-Markov linear inversion method is under development and will be published
+separately. The source geometry sweep option in the CLI will perform a grid
+search over a range of source depths and ranges. This must be computed prior to
+running the source geometry sweep app. This option is not required for the full
+analysis, but demostrates the context in which the source geometry was chosen
+for the analysis of this paper.
+
+### Interactive Plots
+
+Interactive dashboards and visualizations are available as Panel apps in the
+`panel_apps/` directory. To serve Panel apps, use:
+
+```bash
+nescafe23_panel
+```
+
 ## Figures
 
 The figures for publication are generated with Jupyter Notebooks located
@@ -135,6 +155,9 @@ receiver_depths = [999.37979522]
 
 - [ ] Fix $zeta_1$ and $zeta_2$ for +7b, currently the backward raytrace does
       not find the eigen ray
+
+- [ ] currently using solutionsv1.mat for source localization. Evaluate if
+      source localization code is needed.
 
 ## References
 
