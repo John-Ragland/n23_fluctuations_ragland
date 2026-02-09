@@ -25,50 +25,60 @@ envi = param_sweep["envi"]
 source_depths = np.unique(ssource_depths)
 receiver_ranges = np.unique(rreceiver_ranges)
 
+# Load and pre-compute static data
+mean_pulse_lower = xr.open_dataarray(
+    f"{os.environ['NESCAFE23_DATADIR']}dataproducts/mean_pulse_lower.nc"
+)
+mean_pulse_upper = xr.open_dataarray(
+    f"{os.environ['NESCAFE23_DATADIR']}dataproducts/mean_pulse_upper.nc"
+)
+mean_pulse_lower_noise = xr.open_dataarray(
+    f"{os.environ['NESCAFE23_DATADIR']}dataproducts/mean_pulse_lower_noise.nc"
+)
+mean_pulse_upper_noise = xr.open_dataarray(
+    f"{os.environ['NESCAFE23_DATADIR']}dataproducts/mean_pulse_upper_noise.nc"
+)
 
-def plot_ray_lignup(source_depth_slider, receiver_range_slider):
+static_lower = 20 * np.log10(np.abs(mean_pulse_lower)) - mean_pulse_lower_noise
+static_upper = 20 * np.log10(np.abs(mean_pulse_upper)) - mean_pulse_upper_noise
 
+# Create figure once at module level
+fig, ax = plt.subplots(figsize=(10, 4))
+
+# Plot the static colormeshes
+static_lower.plot(x="time", cmap=cmps.plasma_coolwarm(), vmin=0, ax=ax)
+static_upper.plot(
+    x="time", cmap=cmps.plasma_coolwarm(), vmin=0, add_colorbar=False, ax=ax
+)
+
+# Create empty scatter plot that will be updated
+scatter = ax.scatter([], [], c="k", s=5, lw=0)
+ax.set_xlim([100, 105])
+ax.set_ylim([1500, 0])
+ax.set_xlabel("time")
+ax.set_ylabel("depth")
+title = ax.set_title("")
+
+# Create the matplotlib pane once
+mpl_pane = pn.pane.Matplotlib(fig, tight=True)
+
+
+def update_plot(source_depth_slider, receiver_range_slider):
     source_idx = np.argmin(np.abs(source_depths - source_depth_slider))
     range_idx = np.argmin(np.abs(receiver_ranges - receiver_range_slider * 1e3))
-
-    # Calculate the run index from the meshgrid
     run_idx = range_idx * len(source_depths) + source_idx
-
-    fig = plt.figure(figsize=(10, 4))
 
     t_m6 = eigs[run_idx].ts[0][np.where(eigs[run_idx].ray_id[0] == "-6.0")[0][0], -1]
     DT = t_m6 - 100.75
 
-    # open mean pulse
-    fn1 = f"{os.environ['NESCAFE23_DATADIR']}dataproducts/mean_pulse_lower.nc"
-    fn2 = f"{os.environ['NESCAFE23_DATADIR']}dataproducts/mean_pulse_upper.nc"
-    fn3 = f"{os.environ['NESCAFE23_DATADIR']}dataproducts/mean_pulse_lower_noise.nc"
-    fn4 = f"{os.environ['NESCAFE23_DATADIR']}dataproducts/mean_pulse_upper_noise.nc"
-
-    mean_pulse_lower = xr.open_dataarray(fn1)
-    mean_pulse_upper = xr.open_dataarray(fn2)
-    mean_pulse_lower_noise = xr.open_dataarray(fn3)
-    mean_pulse_upper_noise = xr.open_dataarray(fn4)
-
-    (20 * np.log10(np.abs(mean_pulse_lower)) - mean_pulse_lower_noise).plot(
-        x="time", cmap=cmps.plasma_coolwarm(), vmin=0
-    )
-    (20 * np.log10(np.abs(mean_pulse_upper)) - mean_pulse_upper_noise).plot(
-        x="time", cmap=cmps.plasma_coolwarm(), vmin=0, add_colorbar=False
+    # Update only scatter data
+    scatter.set_offsets(np.c_[rays[run_idx].ts[:, -1] - DT, -rays[run_idx].zs[:, -1]])
+    title.set_text(
+        f"Source Depth = {ssource_depths[run_idx]} [m], Range = {rreceiver_ranges[run_idx] / 1e3:.1f} [km]\t$\\Delta \\tau$ = {DT:0.3f} [s]"
     )
 
-    plt.scatter(
-        rays[run_idx].ts[:, -1] - DT, -rays[run_idx].zs[:, -1], c="k", s=5, lw=0
-    )
-    plt.xlim([100, 105])
-    plt.ylim([1500, 0])
-
-    plt.title(
-        f"Source Depth = {ssource_depths[run_idx]} [m], Range = {rreceiver_ranges[run_idx]} [km]\t$\\Delta \\tau$ = {DT:0.3f} [s]"
-    )
-    # plt.hlines(-1072, 90, 110)
-    plt.close()
-    return pn.pane.Matplotlib(fig, tight=True)
+    # Trigger re-render
+    mpl_pane.param.trigger("object")
 
 
 source_depth_slider = pn.widgets.DiscreteSlider(
@@ -81,11 +91,11 @@ receiver_range_slider = pn.widgets.DiscreteSlider(
     value=receiver_ranges[0] / 1e3,
 )
 
-bound_plot = pn.bind(
-    plot_ray_lignup,
-    source_depth_slider=source_depth_slider,
-    receiver_range_slider=receiver_range_slider,
-)
-app = pn.Column(source_depth_slider, receiver_range_slider, bound_plot)
+# Use pn.depends decorator instead of pn.bind
+pn.depends(
+    source_depth_slider.param.value, receiver_range_slider.param.value, watch=True
+)(update_plot)
+
+app = pn.Column(source_depth_slider, receiver_range_slider, mpl_pane)
 
 app.servable()

@@ -132,7 +132,6 @@ def main():
             "compute mean pulse",
             "estimate peak locations",
             "compute wavefront values",
-            "create 2D ocean slice",
             "compute rays",
             "source geometry sweep",
             "exit",
@@ -151,8 +150,6 @@ def main():
         estimate_peak_locations()
     elif choice == "compute wavefront values":
         get_wavefront_values()
-    elif choice == "create 2D ocean slice":
-        compute_full_field()
     elif choice == "compute rays":
         compute_rays()
     elif choice == "source geometry sweep":
@@ -381,34 +378,6 @@ def get_wavefront_values():
 
 
 @check_output_exists(
-    lambda: f"{os.environ['NESCAFE23_DATADIR']}environment_data/dataproducts/full_field.nc",
-    lambda: f"{os.environ['NESCAFE23_DATADIR']}environment_data/dataproducts/full_field_nlm.nc",
-)
-def compute_full_field():
-    fn1 = (
-        f"{os.environ['NESCAFE23_DATADIR']}environment_data/dataproducts/full_field.nc"
-    )
-    fn2 = f"{os.environ['NESCAFE23_DATADIR']}environment_data/dataproducts/full_field_nlm.nc"
-
-    # Delete existing files if they exist to avoid permission issues
-    for fn in [fn1, fn2]:
-        if Path(fn).exists():
-            Path(fn).unlink()
-
-    front_full = tools.create_2D_ocean_slice(z_smooth=500, r_smooth=3000)
-    front_full_nlm = tools.create_2D_ocean_slice_nlm(z_smooth=500, r_smooth=3000)
-
-    # Use compute=True to force immediate write and close
-    front_full.to_netcdf(fn1, mode="w", compute=True)
-    del front_full  # Release any references
-
-    front_full_nlm.to_netcdf(fn2, mode="w", compute=True)
-    del front_full_nlm
-
-    return
-
-
-@check_output_exists(
     lambda: f"{os.environ['NESCAFE23_DATADIR']}dataproducts/ray_run_forward_back.pkl"
 )
 def compute_rays():
@@ -470,8 +439,27 @@ def source_geometry_sweep():
 
     envi = pr.OceanEnvironment2D(sound_speed=c, bathymetry=bathy)
 
-    source_depths = np.array([2000, 2050, 2100, 2150, 2200, 2250, 2300]).astype(float)
-    receiver_ranges = np.array([148e3, 149e3, 150e3, 151e3, 152e3]).astype(float)
+    source_depths = np.array([
+        2000,
+        2050,
+        2100,
+        2150,
+        2200,
+        2250,
+        2300,
+        2350,
+        2400,
+    ]).astype(float)
+    receiver_ranges = np.array([
+        148e3,
+        149e3,
+        150e3,
+        151e3,
+        152e3,
+        153e3,
+        154e3,
+        155e3,
+    ]).astype(float)
 
     ssource_depths, rreceiver_ranges = np.meshgrid(source_depths, receiver_ranges)
 
