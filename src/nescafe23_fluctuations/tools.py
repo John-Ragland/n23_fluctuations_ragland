@@ -3,6 +3,7 @@
 # Load environment variables from .env file
 import os
 import pickle
+import warnings
 
 import fsspec
 import gsw
@@ -14,7 +15,7 @@ import xarray as xr
 import xrsignal as xrs
 from dotenv import find_dotenv, load_dotenv
 from matplotlib import pyplot as plt
-from scipy import io, signal
+from scipy import io, optimize, signal
 from tqdm import tqdm
 
 load_dotenv(find_dotenv())
@@ -103,18 +104,19 @@ PEAK_BBOXS = {
 # (front_idx, back_idx)
 
 EIG_INDEXS = {
-    "+7": [(0, 0), (1, 1)],
-    "-7": [(0, 2), (1, 1), (2, 0)],
-    "-6": [(0, 0)],
+    "-8": [(0, 0)],
+    "+7": [(0, 0)],
+    "-7": [(1, 0)],
+    "-6": [(0, 2), (1, 1), (2, 0)],
     "+6": [(0, 0)],
-    "-5b": [(0, 0), (1, 1)],
+    "-5b": [(0, 1), (1, 4), (2, 3)],
     "-6b": [(0, 0)],
     "+6b": [(0, 0)],
-    "+7b": [(0, 0)],
+    "+7b": [(1, 0)],
     "-7b": [(0, 0)],
     "-8b": [(0, 0)],
     "+8b": [(0, 0)],
-    "+9b": [(1, 0)],
+    "+9b": [(0, 0)],
     "-9b": [(0, 0)],
     "-10b": [(0, 0)],
     "+10b": [(0, 0)],
@@ -273,6 +275,7 @@ def open_receptions(time_slice=(90, 120)):
     return dss
 
 
+# TODO remove this function
 def get_fctd(fn, filt=True, z_smooth=100, r_smooth=10e3, r_shift=0):
     """
     Open, shift in range, and smooth fast ctd data
@@ -683,17 +686,17 @@ def compute_ray_path_variables(
     # Convert backward ray_id to pr format
     ray_id_pr_back, _ = parse_ray_id(ray_id_back)
 
-    try:
-        ray_idx_forward = np.where(eigs.ray_id[0] == ray_id_pr)[0][eig_idx_forward]
-    except IndexError:
-        ray_idx_forward = np.where(eigs.ray_id[0] == ray_id_pr)[0]
+    ray_idx_forward = np.where(eigs.ray_id[0] == ray_id_pr)[0][eig_idx_forward]
+    ray_idx_backward = np.where(eigs_backward.ray_id[0] == ray_id_pr_back)[0][
+        eig_idx_backward
+    ]
 
-    try:
-        ray_idx_backward = np.where(eigs_backward.ray_id[0] == ray_id_pr_back)[0][
-            eig_idx_backward
-        ]
-    except IndexError:
-        ray_idx_backward = np.where(eigs_backward.ray_id[0] == ray_id_pr_back)[0]
+    # Removing exception handling
+    # except IndexError:
+    #    ray_idx_forward = np.where(eigs.ray_id[0] == ray_id_pr)[0][0]
+
+    # except IndexError:
+    #    ray_idx_backward = np.where(eigs_backward.ray_id[0] == ray_id_pr_back)[0]
 
     # get the range and depth vectors along the eigenray
     rs = eigs.rs[0][ray_idx_forward, :].flatten()
@@ -902,6 +905,8 @@ def compute_n23_ray_variables(
     zeta0: float = 7.3,  # m 1GM energy
     N0: float = 3 * (2 * np.pi) / 3600,  # [rad/s], 3 cph
     ray_ids: list | None = None,
+    envi_field: xr.Dataset | None = None,
+    ray_run: dict | None = None,
 ):
     """
     Compute the ray path variables for the nescafe23 environment.
@@ -919,6 +924,10 @@ def compute_n23_ray_variables(
         reference buoyancy frequency of GM spectrum [rad/s], Default is 3 cph
     ray_ids : list
         list of ray identifier strings (e.g., '-7', '+10b'). If None, use all ray IDs in EIG_INDEXS.
+    envi_field : xr.Dataset, optional
+        xarray dataset of the environment, generated with `create_2D_ocean_slice`. If None, load from pre-computed data (generated from CLI)
+    ray_run : dict, optional
+        dictionary containing ray run data, generated with `run_rays`. If None, load from pre-computed data (generated from CLI)
 
     Returns
     -------
@@ -956,10 +965,7 @@ def compute_n23_ray_variables(
         - 'm_high' : maximum vertical wavenumber along ray
     """
 
-    # open environments
-    fn1 = f"{os.environ['NESCAFE23_DATADIR']}environment_data/dataproducts/full_field_nlm.nc"
-
-    envi_field = xr.open_dataset(fn1)
+    envi_field = compute_filtered_fctd_grid(z_smooth=200, r_smooth=15000)
 
     # shift front location
     front_location = 35e3
@@ -989,8 +995,9 @@ def compute_n23_ray_variables(
 
     fn = f"{os.environ['NESCAFE23_DATADIR']}dataproducts/ray_run_forward_back.pkl"
 
-    with open(fn, "rb") as f:
-        ray_run = pickle.load(f)
+    if ray_run is None:
+        with open(fn, "rb") as f:
+            ray_run = pickle.load(f)
 
     eigs = ray_run["eigs"]
     eigs_back = ray_run["eigs_back"]
@@ -1015,7 +1022,6 @@ def compute_n23_ray_variables(
         for n in range(len(EIG_INDEXS[ray_id])):
             if n == 0:
                 rvs[ray_id] = []
-
             rvs[ray_id].append(
                 compute_ray_path_variables(
                     ray_id,
@@ -1066,7 +1072,7 @@ def plot_ray_variables(
             zip(list(EIG_INDEXS.keys()), [[0]] * len(EIG_INDEXS), strict=False)
         )
 
-    fig, axs = plt.subplots(3, 4, figsize=(13, 10))
+    fig, axs = plt.subplots(3, 4, figsize=(16, 10))
 
     fig.suptitle(f"Ray IDs: {', '.join(ray_ids)}", fontweight="bold")
     axs = axs.flatten()
@@ -1304,6 +1310,7 @@ def plot_ray_variables(
             integrand = np.where(np.isfinite(integrand), integrand, 0)
 
             plt.plot(rv["rs"] / 1000, integrand[:, 50], label=ray_id)
+            plt.title("Integrad for D")
 
     plt.tight_layout(pad=0)
 
@@ -1406,6 +1413,47 @@ def compute_F_phi_chi(
     F_chi[~valid_mask] = np.nan
 
     return F_phi, F_chi
+
+
+def compute_F_phi_chi_n23(GM_energy):
+    """
+    Compute the theoretical phase and log-amplitude PSDs for the nescafe23 variables specifically
+
+    Parameters
+    ----------
+    GM_energy : float
+        energy level of Garrett-Munk spectrum, X corresponds to zeta0 = $\sqrt(X) \times$ 7.3 [m]
+
+    Returns
+    -------
+    m : np.array
+        array of vertical wavenumbers [rad/m] at which F_phi and F_chi are computed
+    F_phis : dict
+        dictionary of phase power spectral densities for each ray_id.
+    F_chis : dict
+        dictionary of log-amplitude power spectral densities for each ray_id.
+    """
+
+    zeta0 = 7.3 * np.sqrt(GM_energy)
+    rvs = compute_n23_ray_variables(zeta0=zeta0)
+
+    m = 2 * np.pi * np.logspace(-5, 0, 500)[None, :]  # [rad / m]
+
+    F_phis = {}
+    F_chis = {}
+
+    # compute only for ducted paths
+    for ray_id in ["+7", "-7", "+6", "-6"]:
+        F_phis[ray_id] = []
+        F_chis[ray_id] = []
+
+        for n in range(len(rvs[ray_id])):
+            F_phi, F_chi = compute_F_phi_chi(rvs[ray_id][n], m)
+
+            F_phis[ray_id].append(F_phi)
+            F_chis[ray_id].append(F_chi)
+
+    return m, F_phis, F_chis
 
 
 def compute_lambda_phi(
@@ -1546,46 +1594,179 @@ def estimate_mutual_coherence(X, T):
     return t, MC, MC_var
 
 
-def create_2D_ocean_slice(
-    z_smooth: float = 200,
-    r_smooth: float = 3000,
+def run_rays(
+    num_rays: int | None = None,
+    source_depth: float | None = None,
+    receiver_range: float | None = None,
+    receiver_depths: list | None = None,
 ):
     """
-    Create 2D ocean slice using FCTD, and two full water CTD casts.
+    Solve for the ray fan and eigen rays for the forward and backward propagation environment.
 
+    Default values for source/receiver geometry are from source localization using stitched environment.
+    TODO
     Parameters
     ----------
-    z_smooth : float
-        vertical smoothing scale in meters. Default is 200 m.
-    r_smooth : float
-        horizontal smoothing scale in meters. Default is 3000 m.
+    envi_field : xarray.Dataset, optional
+        xarray Dataset containing 2D ocean slice. If None, will open pre-computed environment
+    num_rays : int
+        Number of rays to shoot in the ray fan. Default is 8000.
+    source_depth : float
+        Source depth in meters. Default is 2361.50872806 m.
+    receiver_range : float
+        Receiver range in meters. Default is 150404.34909747 m.
+    receiver_depths : list of float
+        List of receiver depths in meters. Default is [999.37979522] m.
 
     Returns
     -------
-    front_full : xarray.Dataset
-        xarray Dataset containing 2D ocean slice that is stitched together from FCTD and two CTD casts
-    front_full_nlm : xarray.Dataset
-        xarray Dataset containing 2D ocean slice that is stitched together from FCTD and two CTD casts.
-        Local maximum near -6 upper turning point in SION CTD is manually removed.
+    rays : pr.RayFan
+        Forward ray fan
+    eigs : pr.Eigenrays
+        Forward eigenrays
+    rays_back : pr.RayFan
+        Backward ray fan
+    eigs_back : pr.Eigenrays
+        Backward eigenrays
+    envi : pr.OceanEnvironment2D
+        Forward ocean environment
+    envi_back : pr.OceanEnvironment2D
+        Backward ocean environment
+    geo : dict
+        Dictionary containing source/receiver geometry
     """
-    coords = {
-        "SION": [39 + 37.194 / 60, -63 - 39.427 / 60],
-        "SIOE": [38 + 45.906 / 60, -62 - 15.626 / 60],
+
+    # create default values for geometry
+    if num_rays is None:
+        num_rays = 8000
+    if source_depth is None:
+        source_depth = 2300
+    if receiver_range is None:
+        receiver_range = 153000
+    if receiver_depths is None:
+        receiver_depths = [1072.3225807360088]  # from pressure sensors
+
+    # z_smooth is set to 200 [m]
+    # r_smooth is set to 15 [km]
+    fctd = compute_filtered_fctd_grid(z_smooth=200, r_smooth=15000)
+
+    # shift front location
+    front_location = 35e3  # m
+
+    fctd = fctd.assign_coords({"range": (fctd.range.values + front_location)})
+
+    c = fctd["c"]
+
+    bathy = xr.DataArray(
+        np.linspace(4908, 4908, 100),  # flat bottom
+        dims=["range"],
+        coords={"range": np.linspace(0, 200e3, 100)},
+    )
+
+    envi = pr.OceanEnvironment2D(sound_speed=c, bathymetry=bathy)
+
+    ## Source / Receiver Geometry
+
+    # TODO do correct source localization
+    source_range = 0
+    launch_angles = np.linspace(-30, 30, num_rays)
+    num_range_save = 1000
+
+    ## Forward Rays
+    rays = pr.shoot_rays(
+        source_depth, source_range, launch_angles, receiver_range, num_range_save, envi
+    )
+    eigs = pr.find_eigenrays(
+        rays,
+        receiver_depths,
+        source_depth,
+        source_range,
+        receiver_range,
+        num_range_save,
+        envi,
+        ztol=1,
+        max_iter=500,
+    )
+
+    ## Backward Rays
+    r_back = -1 * (c.range.values - receiver_range)
+    c_back = c.assign_coords({"range": r_back}).sortby("range")
+    envi_back = pr.OceanEnvironment2D(sound_speed=c_back, bathymetry=bathy)
+
+    receiver_depth_back = [source_depth]
+    source_depth_back = receiver_depths[0]
+
+    rays_back = pr.shoot_rays(
+        source_depth_back,
+        source_range,
+        launch_angles,
+        receiver_range,
+        num_range_save,
+        envi_back,
+    )
+    eigs_back = pr.find_eigenrays(
+        rays_back,
+        receiver_depth_back,
+        source_depth_back,
+        source_range,
+        receiver_range,
+        num_range_save,
+        envi_back,
+        ztol=1,
+        max_iter=500,
+    )
+
+    geo = {
+        "source_depth": source_depth,
+        "source_range": source_range,
+        "launch_angles": launch_angles,
+        "receiver_range": receiver_range,
+        "receiver_depths": receiver_depths,
+        "num_range_save": num_range_save,
     }
 
-    fn = f"{os.environ['NESCAFE23_DATADIR']}environment_data/SION_CTD.mat"
-    SION_mat = io.loadmat(fn)
+    return rays, eigs, rays_back, eigs_back, envi, envi_back, geo
 
-    fn = f"{os.environ['NESCAFE23_DATADIR']}environment_data/SIOE_CTD.mat"
-    SIOE_mat = io.loadmat(fn)
 
+def compute_filtered_fctd_grid(
+    z_smooth: float | None = 200,
+    r_smooth: float | None = 5000,
+):
+    """
+    Compute and filter FCTD grid data without slicing or stitching.
+
+    This function loads FCTD data, interpolates it to a regular grid,
+    applies butterworth filters in both vertical and horizontal directions,
+    flips the range coordinate (centered at 115000m of original range),
+    and computes oceanographic variables using GSW.
+
+    Parameters
+    ----------
+    z_smooth : float or None
+        vertical smoothing scale in meters. Default is 200 m.
+        If None, no vertical filtering is applied.
+    r_smooth : float or None
+        horizontal smoothing scale in meters. Default is 5000 m.
+        If None, no horizontal filtering is applied.
+
+    Returns
+    -------
+    fctd_output : xarray.Dataset
+        xarray Dataset containing filtered FCTD data with oceanographic variables:
+        - t: in-situ temperature (deg C)
+        - SP: practical salinity (psu)
+        - c: sound speed (m/s)
+        - N: buoyancy frequency (cph)
+        - SA: absolute salinity (g/kg)
+        - dcdz_p: adiabatic vertical sound speed gradient (m/s^2)
+    """
     fn = f"{os.environ['NESCAFE23_DATADIR']}environment_data/FCTD_SoundSpeed_Colosi_v2.mat"
     fctd_mat = io.loadmat(fn)
 
     fctds = {}
     fctds_pilot = {}
 
-    deep_value = {"tt": 2.3, "ss": 34.885}  # , 'cc':1640}
+    deep_value = {"tt": 2.3, "ss": 34.885}
 
     for k, var in enumerate(["tt", "ss"]):
         fctds[var] = xr.DataArray(
@@ -1617,220 +1798,78 @@ def create_2D_ocean_slice(
         "depth": np.arange(0, 6000),
     })
 
-    bz, az = signal.butter(4, 1 / z_smooth, fs=1)
-    br, ar = signal.butter(4, 1 / r_smooth, fs=1 / 500)
+    # Create butterworth filters if smoothing is requested
+    if z_smooth is not None:
+        bz, az = signal.butter(4, 1 / z_smooth, fs=1)
+    if r_smooth is not None:
+        br, ar = signal.butter(4, 1 / r_smooth, fs=1 / 500)
 
-    front = {}
+    # Apply filters to both variables
+    fctd_filtered = {}
     for k, var in enumerate(["tt", "ss"]):
-        fctd_smooth = xrs.filtfilt(
-            xrs.filtfilt(fctd_grid[var], dim="range", b=br, a=ar),
-            dim="depth",
-            b=bz,
-            a=az,
-        )
+        # Start with the gridded data
+        fctd_smooth = fctd_grid[var]
 
-        front[var] = fctd_smooth.sel({"range": slice(60000, 170000)})
-        front[var] = front[var].assign_coords({
-            "range": front[var].range.values - 115000
-        })
-        front[var] = (
-            front[var]
-            .assign_coords({"range": np.flip(front[var].range.values)})
-            .sortby("range")
-        )
+        # Apply range filter if requested
+        if r_smooth is not None:
+            fctd_smooth = xrs.filtfilt(fctd_smooth, dim="range", b=br, a=ar)
 
-        front[var] = front[var].drop_vars(["latitude", "longitude"])
+        # Apply depth filter if requested
+        if z_smooth is not None:
+            fctd_smooth = xrs.filtfilt(fctd_smooth, dim="depth", b=bz, a=az)
 
-    front = xr.Dataset(front)
+        fctd_filtered[var] = fctd_smooth
 
-    full_field_range_coord = np.arange(-155000, 155000, 500)
+    fctd_filtered = xr.Dataset(fctd_filtered)
 
-    mask = xr.DataArray(
-        np.ones((6000, len(full_field_range_coord))),
-        dims=["depth", "range"],
-        coords={"depth": front.depth, "range": full_field_range_coord},
-    )
+    # Drop latitude and longitude if they exist
+    if "latitude" in fctd_filtered.coords:
+        fctd_filtered = fctd_filtered.drop_vars(["latitude", "longitude"])
 
-    front_rep = xr.concat(
-        (
-            front.isel({"range": 0}).assign_coords({"range": -155000}),
-            front,
-            front.isel({"range": -1}).assign_coords({"range": 155000}),
-        ),
-        dim="range",
-    )
+    # Add attributes
+    fctd_filtered["tt"].attrs["units"] = "deg C"
+    fctd_filtered["tt"].name = "in-situ temperature"
 
-    front_full = front_rep.interp_like(
-        mask, kwargs={"bounds_error": False, "fill_value": "extrapolate"}
-    )
+    fctd_filtered["ss"].attrs["units"] = "psu"
+    fctd_filtered["ss"].name = "practical salinity"
 
-    SION = {
-        "tt": xr.DataArray(
-            SION_mat["t5"].flatten(),
-            dims=["depth"],
-            coords={"depth": SION_mat["z5"].flatten()},
-        ),
-        "ss": xr.DataArray(
-            SION_mat["s5"].flatten(),
-            dims=["depth"],
-            coords={"depth": SION_mat["z5"].flatten()},
-        ),
+    # Compute oceanographic variables
+    coords = {
+        "SION": [39 + 37.194 / 60, -63 - 39.427 / 60],
     }
 
-    SIOE = {
-        "tt": xr.DataArray(
-            SIOE_mat["t8"].flatten(),
-            dims=["depth"],
-            coords={"depth": SIOE_mat["z8"].flatten()},
-        ),
-        "ss": xr.DataArray(
-            SIOE_mat["s8"].flatten(),
-            dims=["depth"],
-            coords={"depth": SIOE_mat["z8"].flatten()},
-        ),
-    }
+    # Transpose to [depth, range] for GSW calculations
+    fctd_transposed = fctd_filtered.transpose("depth", "range")
 
-    for var in SION.keys():
-        # Add 10000 meter
-        SION[var] = xr.concat(
-            (
-                SION[var],
-                xr.ones_like(SION[var][-2:-1]).assign_coords({"depth": [10000]})
-                * deep_value[var],
-            ),
-            dim="depth",
-        )
+    p = gsw.p_from_z(-fctd_transposed.depth, coords["SION"][0])
 
-        # Add 10000 meter
-        SIOE[var] = xr.concat(
-            (
-                SIOE[var],
-                xr.ones_like(SIOE[var][-2:-1]).assign_coords({"depth": [10000]})
-                * deep_value[var],
-            ),
-            dim="depth",
-        )
-
-        SION[var] = xrs.filtfilt(SION[var], dim="depth", b=bz, a=az)
-        SIOE[var] = xrs.filtfilt(SIOE[var], dim="depth", b=bz, a=az)
-
-    SION = xr.Dataset(SION)
-    SIOE = xr.Dataset(SIOE)
-
-    SION_full = SION.interp_like(
-        mask, kwargs={"bounds_error": False, "fill_value": "extrapolate"}
-    ).broadcast_like(mask)
-
-    SIOE_full = SIOE.interp_like(
-        mask, kwargs={"bounds_error": False, "fill_value": "extrapolate"}
-    ).broadcast_like(mask)
-
-    SION_full_nlm = SION_full.copy()
-    SION_full_nlm = SION_full_nlm.where(
-        (SION_full_nlm.depth > 350) | (SION_full_nlm.depth < 25), np.nan
-    )
-    SION_full_nlm = SION_full_nlm.interpolate_na(dim="depth")
-
-    # compute C
-    p = gsw.p_from_z(-SION_full_nlm.depth, lat=coords["SION"][0])
-
-    mask1 = mask.where(
-        (mask.depth < 800) & (mask.range > -50000) & (mask.range < 50000), 0
-    )
-    mask2 = (-mask1 + 1).where(mask.range > -30000, 0)
-    mask3 = (-mask1 + 1).where(mask.range <= -30000, 0)
-
-    z = np.linspace(-np.pi, np.pi, 600)
-    x = np.linspace(-np.pi, np.pi, 120)
-
-    kernel_x = (np.cos(x) + 1) / 2
-    kernel_z = (np.cos(z) + 1) / 2
-
-    kernel = kernel_z[:, None] * kernel_x[None, :]
-    kernel = kernel / np.sum(kernel)
-
-    mask1_smooth = xr.DataArray(
-        _fftconvolve_mirror(mask1.values, kernel, mode="same"),
-        dims=["depth", "range"],
-        coords={"depth": mask.depth, "range": mask.range},
-    )
-
-    mask2_smooth = xr.DataArray(
-        _fftconvolve_mirror(mask2.values, kernel, mode="same"),
-        dims=["depth", "range"],
-        coords={"depth": mask.depth, "range": mask.range},
-    )
-
-    mask3_smooth = xr.DataArray(
-        _fftconvolve_mirror(mask3.values, kernel, mode="same"),
-        dims=["depth", "range"],
-        coords={"depth": mask.depth, "range": mask.range},
-    )
-
-    full_field = (
-        front_full * mask1_smooth + SION_full * mask2_smooth + SIOE_full * mask3_smooth
-    )
-
-    full_field["tt"].attrs["units"] = "deg C"
-    full_field["tt"].name = "in-situ temperature"
-
-    full_field["ss"].attrs["units"] = "psu"
-    full_field["ss"].name = "pracitical salinity"
-
-    full_field_nlm = (
-        front_full * mask1_smooth
-        + SION_full_nlm * mask2_smooth
-        + SIOE_full * mask3_smooth
-    )
-
-    full_field_nlm["tt"].attrs["units"] = "deg C"
-    full_field_nlm["tt"].name = "in-situ temperature"
-
-    full_field_nlm["ss"].attrs["units"] = "psu"
-    full_field_nlm["ss"].name = "pracitical salinity"
-
-    # ## Calculate all oceanographic variables
-    p = gsw.p_from_z(-full_field.depth, coords["SION"][0])
-
-    ## Salinity
-    SA = gsw.SA_from_SP(full_field["ss"], p, coords["SION"][1], coords["SION"][0])
+    # Absolute Salinity
+    SA = gsw.SA_from_SP(fctd_transposed["ss"], p, coords["SION"][1], coords["SION"][0])
     SA.attrs["units"] = "g/kg"
     SA.name = "Absolute Salinity"
 
-    SA_nlm = gsw.SA_from_SP(
-        full_field_nlm["ss"], p, coords["SION"][1], coords["SION"][0]
-    )
-    SA_nlm.attrs["units"] = "g/kg"
-    SA_nlm.name = "Absolute Salinity"
-
-    ## Conservative Temperature
-    CT = gsw.CT_from_t(SA, full_field["tt"], p)
+    # Conservative Temperature
+    CT = gsw.CT_from_t(SA, fctd_transposed["tt"], p)
     CT.attrs["units"] = "deg C"
     CT.name = "Conservative Temperature"
 
-    CT_nlm = gsw.CT_from_t(SA_nlm, full_field_nlm["tt"], p)
-    CT_nlm.attrs["units"] = "deg C"
-    CT_nlm.name = "Conservative Temperature"
-
-    ## Sound Spped
-    c = aog_vsdg(p, full_field["tt"], full_field["ss"])
+    # Sound Speed
+    c = aog_vsdg(p, fctd_transposed["tt"], fctd_transposed["ss"])
     c.attrs["units"] = "m/s"
     c.name = "Sound Speed"
 
-    c_nlm = aog_vsdg(p, full_field_nlm["tt"], full_field_nlm["ss"])
-    c_nlm.attrs["units"] = "m/s"
-    c_nlm.name = "Sound Speed"
-
-    ## Buoyancy Frequency
+    # Buoyancy Frequency
     N2, pmid = gsw.Nsquared(SA, CT, p.values[:, None], lat=coords["SION"][0], axis=0)
     z_mid = gsw.z_from_p(pmid, coords["SION"][0])[:, 0]
     N2x = xr.DataArray(
-        N2, dims=["depth", "range"], coords={"depth": -z_mid, "range": full_field.range}
+        N2,
+        dims=["depth", "range"],
+        coords={"depth": -z_mid, "range": fctd_transposed.range},
     )
     N = (
         np.sqrt(
             N2x.interp(
-                {"depth": full_field.depth},
+                {"depth": fctd_transposed.depth},
                 kwargs={"bounds_error": False, "fill_value": "extrapolate"},
             )
         )
@@ -1840,209 +1879,271 @@ def create_2D_ocean_slice(
     N.attrs["units"] = "cph"
     N.name = "Buoyancy Frequency"
 
-    N2_nlm, pmid = gsw.Nsquared(
-        SA_nlm, CT_nlm, p.values[:, None], lat=coords["SION"][0], axis=0
-    )
-    z_mid = gsw.z_from_p(pmid, coords["SION"][0])[:, 0]
-    N2x_nlm = xr.DataArray(
-        N2_nlm,
-        dims=["depth", "range"],
-        coords={"depth": -z_mid, "range": full_field.range},
-    )
-    N_nlm = (
-        np.sqrt(
-            N2x_nlm.interp(
-                {"depth": full_field.depth},
-                kwargs={"bounds_error": False, "fill_value": "extrapolate"},
-            )
-        )
-        / (2 * np.pi)
-        * 3600
-    )
-    N_nlm.attrs["units"] = "cph"
-    N_nlm.name = "Buoyancy Frequency"
-
-    ## Potential Temperature
-    PT = gsw.pt_from_t(SA, full_field["tt"], p, 0)
+    # Potential Temperature
+    PT = gsw.pt_from_t(SA, fctd_transposed["tt"], p, 0)
     PT.attrs["units"] = "deg C"
     PT.name = "potential temperature"
 
-    PT_nlm = gsw.pt_from_t(SA_nlm, full_field_nlm["tt"], p, 0)
-    PT_nlm.attrs["units"] = "deg C"
-    PT_nlm.name = "potential temperature"
-
-    ## Adiabatic Sound Speed Gradient
-    C_adiabatic = aog_vsdg(0, PT, full_field["ss"])
+    # Adiabatic Sound Speed Gradient
+    C_adiabatic = aog_vsdg(0, PT, fctd_transposed["ss"])
     C_adiabatic.attrs["units"] = "deg C"
     C_adiabatic.name = "adiabatic sound speed"
-
-    C_adiabatic_nlm = aog_vsdg(0, PT_nlm, full_field_nlm["ss"])
-    C_adiabatic_nlm.attrs["units"] = "deg C"
-    C_adiabatic_nlm.name = "adiabatic sound speed"
 
     dcdz_p = -C_adiabatic.differentiate("depth")
     dcdz_p.attrs["units"] = "$m/s^2$"
     dcdz_p.name = "adiabatic vertical sound speed gradient"
 
-    dcdz_p_nlm = -C_adiabatic_nlm.differentiate("depth")
-    dcdz_p_nlm.attrs["units"] = "$m/s^2$"
-    dcdz_p_nlm.name = "adiabatic vertical sound speed gradient"
-
-    full_field_full = xr.Dataset({
-        "t": full_field["tt"],
-        "SP": full_field["ss"],
+    # Create final dataset with all oceanographic variables
+    fctd_output = xr.Dataset({
+        "t": fctd_transposed["tt"],
+        "SP": fctd_transposed["ss"],
         "c": c,
         "N": N,
         "SA": SA,
         "dcdz_p": dcdz_p,
     })
-    full_field_full_nlm = xr.Dataset({
-        "t": full_field_nlm["tt"],
-        "SP": full_field_nlm["ss"],
-        "c": c_nlm,
-        "N": N_nlm,
-        "SA": SA_nlm,
-        "dcdz_p": dcdz_p_nlm,
-    })
 
-    return full_field_full, full_field_full_nlm
+    # center on front and flip range coord
+    fctd_centered = fctd_output.assign_coords({
+        "range": 115000 - fctd_output.range.values
+    }).sortby("range")
+
+    # extend FCTD to range of +/-300 km by repeating edge values
+    fctd_centered = xr.concat(
+        (
+            fctd_centered,
+            fctd_centered.isel({"range": -1}).assign_coords({"range": 300000}),
+        ),
+        dim="range",
+    )
+    fctd_centered = xr.concat(
+        (
+            fctd_centered.isel({"range": 0}).assign_coords({"range": -300000}),
+            fctd_centered,
+        ),
+        dim="range",
+    )
+
+    return fctd_centered
 
 
-def _fftconvolve_mirror(input_array, kernel, mode="same"):
+def compute_mean_pulse():
     """
-    FFT convolution with mirror boundary conditions.
-
-    Parameters:
-    -----------
-    input_array : array_like
-        Input array to convolve
-    kernel : array_like
-        Convolution kernel
-    mode : str
-        'same', 'valid', or 'full'
+    Compute the mean pulse and mean pulse noise for the 23 receptions
     """
-    input_shape = np.array(input_array.shape)
-    kernel_shape = np.array(kernel.shape)
+    dss = open_receptions()
 
-    # Calculate padding needed (kernel_size - 1 on each side)
-    pad_width = [(k - 1, k - 1) for k in kernel_shape]
-
-    # Pad with mirror/reflection
-    padded = np.pad(input_array, pad_width, mode="reflect")
-
-    # Perform FFT convolution with mode='valid'
-    result = signal.fftconvolve(padded, kernel, mode="valid")
-
-    if mode == "same":
-        # Center the result by cropping from the correct starting position
-        # The valid convolution on padded input produces an output that needs to be
-        # cropped by (k-1)//2 from the start to align with scipy's 'same' mode
-        start = [(k - 1) // 2 for k in kernel_shape]
-        slices = tuple(
-            slice(s, s + inp_s) for s, inp_s in zip(start, input_shape, strict=False)
+    dss_interp = []
+    dss_upper_interp = []
+    for ds in tqdm(dss):
+        dss_interp.append(
+            np.abs(
+                ds.swap_dims({"hydrophone": "actual_depth"})
+                .rename({"actual_depth": "depth"})[32:]
+                .interp({
+                    "depth": np.linspace(800, 1400, 50),
+                    "time": dss[0].time.values,
+                })
+                .drop_vars(["nominal_depth"])
+            )
         )
-        return result[slices]
-    elif mode == "full":
-        return result
-    elif mode == "valid":
-        # Calculate valid region size
-        valid_shape = input_shape - kernel_shape + 1
-        # Center the valid region using the same offset as 'same' mode
-        start = [(k - 1) // 2 for k in kernel_shape]
-        slices = tuple(
-            slice(s, s + v) for s, v in zip(start, valid_shape, strict=False)
+
+        dss_upper_interp.append(
+            np.abs(
+                ds.swap_dims({"hydrophone": "actual_depth"})
+                .rename({"actual_depth": "depth"})[:32]
+                .interp({
+                    "depth": np.linspace(100, 600, 50),
+                    "time": dss[0].time.values,
+                })
+                .drop_vars(["nominal_depth"])
+            )
         )
-        return result[slices]
 
-    return result
+    ds_interp = xr.concat(dss_interp, dim="Tx")
+    ds_interp_upper = xr.concat(dss_upper_interp, dim="Tx")
+
+    mean_pulse_upper = ds_interp_upper.mean(dim="Tx")
+    mean_pulse_lower = ds_interp.mean(dim="Tx")
+
+    mean_pulse_upper_noise = 20 * np.log10(
+        np.sqrt((mean_pulse_upper.sel({"time": slice(90, 95)}) ** 2).mean(dim="time"))
+    )
+    mean_pulse_lower_noise = 20 * np.log10(
+        np.sqrt((mean_pulse_lower.sel({"time": slice(90, 95)}) ** 2).mean(dim="time"))
+    )
+
+    return (
+        mean_pulse_lower,
+        mean_pulse_upper,
+        mean_pulse_lower_noise,
+        mean_pulse_upper_noise,
+    )
 
 
-def run_rays():
+def estimate_F_phi_chi():
+    r"""
+    Estimate observed $F_{\phi}$ and $F_{\chi}$ for the acoustic receptions.
+
+    Periodograms are computed for each of the receptions and the periodograms are averaged together in the log domain
+
+    Returns
+    -------
+    m_data : np.array
+        array of vertical wavenumbers [1/m] at which $F_\phi$ and $F_\chi$ are estimated
+    F_phi_data : dict
+        dictionary containing arrays of phase power spectral density, $F_\phi$ [rad m]
+    F_chi_data : dict
+        dictionary containing arrays of log-amplitude power spectral density, $F_\chi$ [rad m]
+    F_phi_lm : dict
+        dictionary containing arrays of log-mean phase power spectral density, $F_\phi$ [rad m]
+    F_phi_ls : dict
+        dictionary containing arrays of log-standard deviation of phase power spectral density, $F_\phi$ [rad m]
+    F_chi_lm : dict
+        dictionary containing arrays of log-mean log-amplitude power spectral density, $F_\chi$ [rad m]
+    F_chi_ls : dict
+        dictionary containing arrays of log-standard deviation of log-amplitude power spectral density, $F_\chi$ [rad m]
     """
-    Solve for the ray fan and eigen rays for the forward and backward propagation environment.
+
+    fn = f"{os.environ['NESCAFE23_DATADIR']}dataproducts/wavefront_values.pkl"
+
+    with open(fn, "rb") as f:
+        wavefront_values = pickle.load(f)
+
+    ray_ids = ["+7", "-7", "-6", "+6"]
+
+    F_chi_data = {}
+    F_phi_data = {}
+
+    F_chi_lm = {}
+    F_chi_ls = {}
+    F_phi_lm = {}
+    F_phi_ls = {}
+
+    for ray_id in ray_ids:
+        # extract amplitude, intensity, and phase from wavefront values
+        amp = np.abs(wavefront_values[ray_id])
+        lamp = np.log(amp)
+        phase = np.unwrap(np.angle(wavefront_values[ray_id]), axis=1)
+
+        # remove outliers from phase
+        phase[np.s_[:, np.r_[4:6, 20]]] = np.nan
+        phase = phase - np.nanmean(phase, axis=1)[:, None]
+        phase[np.isnan(phase)] = 0
+
+        # m_data [1/m]
+        # F_phi_data, F_chi_data [rad m]
+        _, F_phi_data[ray_id] = signal.periodogram(phase, fs=1 / 9, axis=1)
+        m_data, F_chi_data[ray_id] = signal.periodogram(lamp, fs=1 / 9, axis=1)
+
+        # remove DC comp
+        m_data = m_data[1:]
+        F_chi_data[ray_id] = F_chi_data[ray_id][:, 1:]
+        F_phi_data[ray_id] = F_phi_data[ray_id][:, 1:]
+
+        # Take mean and standard deviation in log space
+        F_chi_lm[ray_id] = 10 ** np.mean(np.log10(F_chi_data[ray_id]), axis=0)
+        F_chi_ls[ray_id] = 10 ** np.std(np.log10(F_chi_data[ray_id]), axis=0)
+
+        F_phi_lm[ray_id] = 10 ** np.mean(np.log10(F_phi_data[ray_id]), axis=0)
+        F_phi_ls[ray_id] = 10 ** np.std(np.log10(F_phi_data[ray_id]), axis=0)
+
+    return m_data, F_phi_data, F_chi_data, F_phi_lm, F_phi_ls, F_chi_lm, F_chi_ls
+
+
+def phi_chi_spectrum_model(m, GM, phi_noise, chi_noise, ray_id):
     """
+    phi_chi_spectrum_model - compute model of F_phi and F_chi, GM internal waves, WFT, and white observational noise
 
-    ## Open Environment
-    fn = f"{os.environ['NESCAFE23_DATADIR']}environment_data/dataproducts/full_field_nlm.nc"
-    envi_field = xr.open_dataset(fn)
+    Parameters
+    ----------
+    m : np.array
+        array of vertical wavenumbers [rad/m] at which to compute $F_\phi$ and $F_\chi$
+    GM : float
+        energy level of Garrett-Munk spectrum, X corresponds to zeta0 = $\sqrt(X) \times$ 7.3 [m]
+    phi_noise : float
+        observational noise level for phase power spectral density, $F_\phi$ [rad m]
+    chi_noise : float
+        observational noise level for log-amplitude power spectral density, $F_\chi$ [rad m]
+    ray_id : str
+        ray id for which to compute the model ('+7', '-7', '+6', '-6')
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
 
-    # shift front location
-    front_location = 35e3  # m
+        zeta0 = 7.3 * np.sqrt(GM)
+        rvs = compute_n23_ray_variables(zeta0=zeta0, ray_ids=[ray_id])
 
-    envi_field = envi_field.assign_coords({
-        "range": (envi_field.range.values + front_location)
-    })
+        # using first ray pair for now TODO
+        F_phi, F_chi = compute_F_phi_chi(rvs[ray_id][0], m)
 
-    c = envi_field["c"]
+    F_phi_noise = F_phi + phi_noise
+    F_chi_noise = F_chi + chi_noise
 
-    bathy = xr.DataArray(
-        np.linspace(4908, 4908, 100),  # flat bottom
-        dims=["range"],
-        coords={"range": np.linspace(0, 200e3, 100)},
-    )
+    return F_phi_noise, F_chi_noise, F_phi, F_chi
 
-    envi = pr.OceanEnvironment2D(sound_speed=c, bathymetry=bathy)
 
-    ## Source / Receiver Geometry
-    # TODO do correct source localization
-    source_depth = 2361.50872806
-    source_range = 0
-    launch_angles = np.linspace(-30, 30, 8000)
-    receiver_range = 150404.34909747
-    num_range_save = 1000
-    receiver_depths = [999.37979522]
+def fit_F_phi_chis(m_data, F_phi_lm, F_chi_lm, F_phi_ls, F_chi_ls):
+    """
+    given observation and theory (assuming GM), fit GM energy and
+        observational noise levels to the observations
 
-    ## Forward Rays
-    rays = pr.shoot_rays(
-        source_depth, source_range, launch_angles, receiver_range, num_range_save, envi
-    )
-    eigs = pr.find_eigenrays(
-        rays,
-        receiver_depths,
-        source_depth,
-        source_range,
-        receiver_range,
-        num_range_save,
-        envi,
-        ztol=10,
-        max_iter=500,
-    )
+    Parameters
+    ----------
+    m_data : np.array
+        array of vertical wavenumbers [1/m] at which $F_\phi$ and $F_\chi$ are estimated
+        computed with `estimate_F_phi_chi`
+    F_phi_lm : dict
+        dictionary containing arrays of log-mean phase power spectral density, $F_\phi$ [rad m]
+        computed with `estimate_F_phi_chi`
+    F_chi_lm : dict
+        dictionary containing arrays of log-mean log-amplitude power spectral density, $F_\chi$ [rad m]
+        computed with `estimate_F_phi_chi`
+    F_phi_ls : dict
+        dictionary containing arrays of log-standard deviation of phase power spectral density, $F_\phi$
+        computed with `estimate_F_phi_chi`
+    F_chi_ls : dict
+        dictionary containing arrays of log-standard deviation of log-amplitude power spectral density, $F_\chi$
+        computed with `estimate_F_phi_chi`
+    """
+    m_data_radm = m_data * 2 * np.pi  # convert to [rad/m]
 
-    ## Backward Rays
-    r_back = -1 * (c.range.values - receiver_range)
-    c_back = c.assign_coords({"range": r_back}).sortby("range")
-    envi_back = pr.OceanEnvironment2D(sound_speed=c_back, bathymetry=bathy)
+    def residuals(params, ray_id):
 
-    receiver_depth_back = [source_depth]
-    source_depth_back = receiver_depths[0]
+        GM, phi_noise, chi_noise = params
 
-    rays_back = pr.shoot_rays(
-        source_depth_back,
-        source_range,
-        launch_angles,
-        receiver_range,
-        num_range_save,
-        envi_back,
-    )
-    eigs_back = pr.find_eigenrays(
-        rays_back,
-        receiver_depth_back,
-        source_depth_back,
-        source_range,
-        receiver_range,
-        num_range_save,
-        envi_back,
-        ztol=10,
-        max_iter=500,
-    )
+        P_phi = np.log10(F_phi_ls[ray_id]) ** 2
+        P_chi = np.log10(F_chi_ls[ray_id]) ** 2
 
-    geo = {
-        "source_depth": source_depth,
-        "source_range": source_range,
-        "launch_angles": launch_angles,
-        "receiver_range": receiver_range,
-        "receiver_depths": receiver_depths,
-        "num_range_save": num_range_save,
-    }
+        F_phi_model, F_chi_model, _, _ = phi_chi_spectrum_model(
+            m_data_radm, GM, phi_noise, chi_noise, ray_id
+        )
 
-    return rays, eigs, rays_back, eigs_back, envi, envi_back, geo
+        y_phi = np.log10(F_phi_model)
+        f_phi = np.log10(F_phi_lm[ray_id])
+        W_phi = np.diag(1 / P_phi)
+
+        y_chi = np.log10(F_chi_model)
+        f_chi = np.log10(F_chi_lm[ray_id])
+        W_chi = np.diag(1 / P_chi)
+
+        L_phi = (y_phi - f_phi).T @ W_phi @ (y_phi - f_phi)
+        L_chi = (y_chi - f_chi).T @ W_chi @ (y_chi - f_chi)
+
+        L = L_phi + L_chi
+
+        return L
+
+    # Fit for each ray id
+
+    # Initial guess for [GM, phi_noise, chi_noise]
+    results = {}
+    for ray_id in tqdm(["+7", "-7", "+6", "-6"]):
+        initial_params = np.array([1, 1e0, 2e-1])
+
+        # Minimize
+        results[ray_id] = optimize.minimize(
+            residuals, initial_params, args=(ray_id,), method="Nelder-Mead"
+        )
+
+    return results

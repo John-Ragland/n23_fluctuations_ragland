@@ -6,7 +6,9 @@ from pathlib import Path
 import fsspec
 import matplotlib.pyplot as plt
 import numpy as np
+import pygenray as pr
 import questionary
+import xarray as xr
 from scipy import signal
 
 from nescafe23_fluctuations import tools
@@ -127,10 +129,11 @@ def main():
             "initialize package",
             "run all processing",
             "compute arrival time offset",
+            "compute mean pulse",
             "estimate peak locations",
             "compute wavefront values",
-            "create 2D ocean slice",
             "compute rays",
+            "source geometry sweep",
             "exit",
         ],
     ).ask()
@@ -141,14 +144,16 @@ def main():
         run_all_processing()
     elif choice == "compute arrival time offset":
         compute_arrival_time_offset()
+    elif choice == "compute mean pulse":
+        compute_mean_pulse()
     elif choice == "estimate peak locations":
         estimate_peak_locations()
     elif choice == "compute wavefront values":
         get_wavefront_values()
-    elif choice == "create 2D ocean slice":
-        compute_full_field()
     elif choice == "compute rays":
         compute_rays()
+    elif choice == "source geometry sweep":
+        source_geometry_sweep()
     elif choice == "exit":
         print("Goodbye!")
         return
@@ -373,33 +378,6 @@ def get_wavefront_values():
 
 
 @check_output_exists(
-    lambda: f"{os.environ['NESCAFE23_DATADIR']}environment_data/dataproducts/full_field.nc",
-    lambda: f"{os.environ['NESCAFE23_DATADIR']}environment_data/dataproducts/full_field_nlm.nc",
-)
-def compute_full_field():
-    fn1 = (
-        f"{os.environ['NESCAFE23_DATADIR']}environment_data/dataproducts/full_field.nc"
-    )
-    fn2 = f"{os.environ['NESCAFE23_DATADIR']}environment_data/dataproducts/full_field_nlm.nc"
-
-    # Delete existing files if they exist to avoid permission issues
-    for fn in [fn1, fn2]:
-        if Path(fn).exists():
-            Path(fn).unlink()
-
-    front_full, front_full_nlm = tools.create_2D_ocean_slice()
-
-    # Use compute=True to force immediate write and close
-    front_full.to_netcdf(fn1, mode="w", compute=True)
-    del front_full  # Release any references
-
-    front_full_nlm.to_netcdf(fn2, mode="w", compute=True)
-    del front_full_nlm
-
-    return
-
-
-@check_output_exists(
     lambda: f"{os.environ['NESCAFE23_DATADIR']}dataproducts/ray_run_forward_back.pkl"
 )
 def compute_rays():
@@ -423,3 +401,167 @@ def compute_rays():
         f"{os.environ['NESCAFE23_DATADIR']}dataproducts/ray_run_forward_back.pkl", "wb"
     ) as f:
         pickle.dump(ray_data, f)
+
+
+@check_output_exists(
+    lambda: f"{os.environ['NESCAFE23_DATADIR']}dataproducts/ray_geo_sweep.pkl"
+)
+def source_geometry_sweep():
+    """
+    Do a sweep of source depth and range to match the observed ducted section of the wavefront to rays through the FCTD
+    """
+
+    # Open receptions to get mean lower array depth (from pressure sensors)
+    dss = tools.open_receptions()
+    lower_array_depth = []
+    for k in range(23):
+        lower_array_depth.append(float(dss[k].actual_depth[32:].mean()))
+
+    lower_array_depth = np.array(lower_array_depth)
+    Z_lower_array = np.mean(lower_array_depth)
+
+    ## Prepare environment
+    # Aggresive smoothing (faster ray tracing)
+    fctd = tools.compute_filtered_fctd_grid(z_smooth=500, r_smooth=10000)
+
+    # shift front location
+    front_location = 35e3  # m
+
+    fctd = fctd.assign_coords({"range": (fctd.range.values + front_location)})
+
+    c = fctd["c"]
+
+    bathy = xr.DataArray(
+        np.linspace(4908, 4908, 100),  # flat bottom
+        dims=["range"],
+        coords={"range": np.linspace(0, 200e3, 100)},
+    )
+
+    envi = pr.OceanEnvironment2D(sound_speed=c, bathymetry=bathy)
+
+    source_depths = np.array([
+        2000,
+        2050,
+        2100,
+        2150,
+        2200,
+        2250,
+        2300,
+        2350,
+        2400,
+    ]).astype(float)
+    receiver_ranges = np.array([
+        148e3,
+        149e3,
+        150e3,
+        151e3,
+        152e3,
+        153e3,
+        154e3,
+        155e3,
+    ]).astype(float)
+
+    ssource_depths, rreceiver_ranges = np.meshgrid(source_depths, receiver_ranges)
+
+    ssource_depths = ssource_depths.flatten()
+    rreceiver_ranges = rreceiver_ranges.flatten()
+
+    rays = []
+    eigs = []
+
+    for k in range(len(ssource_depths)):
+        source_depth = ssource_depths[k]
+        receiver_range = rreceiver_ranges[k]
+        source_range = 0
+        receiver_depths = [float(Z_lower_array)]
+        launch_angles = np.linspace(-35, 35, 1001)
+        num_range_save = 1000
+
+        print(
+            f"Run {k + 1}/{len(ssource_depths)}, zs = {source_depth}[m], r={receiver_range / 1000} [km]..."
+        )
+
+        rays.append(
+            pr.shoot_rays(
+                source_depth,
+                source_range,
+                launch_angles,
+                receiver_range,
+                num_range_save,
+                envi,
+            )
+        )
+        eigs.append(
+            pr.find_eigenrays(
+                rays[k],
+                receiver_depths,
+                source_depth,
+                source_range,
+                receiver_range,
+                num_range_save,
+                envi,
+            )
+        )
+
+    fn = f"{os.environ['NESCAFE23_DATADIR']}dataproducts/ray_geo_sweep.pkl"
+    with open(fn, "wb") as f:
+        pickle.dump(
+            {
+                "source_depths": ssource_depths,
+                "receiver_ranges": rreceiver_ranges,
+                "rays": rays,
+                "eigs": eigs,
+                "envi": envi,
+            },
+            f,
+        )
+
+
+def serve_panel_apps():
+    """Serve Panel apps from the panel_apps directory."""
+    import subprocess
+    import sys
+
+    panel_apps_dir = package_dir / "panel_apps"
+    app_files = list(panel_apps_dir.glob("*.py"))
+
+    # Serve all Python files in the directory
+    cmd = [
+        sys.executable,
+        "-m",
+        "panel",
+        "serve",
+        *[str(f) for f in app_files],
+        "--show",
+    ]
+
+    subprocess.run(cmd)
+
+
+@check_output_exists(
+    lambda: f"{os.environ['NESCAFE23_DATADIR']}dataproducts/mean_pulse_lower.nc",
+    lambda: f"{os.environ['NESCAFE23_DATADIR']}dataproducts/mean_pulse_upper.nc",
+    lambda: f"{os.environ['NESCAFE23_DATADIR']}dataproducts/mean_pulse_lower_noise.nc",
+    lambda: f"{os.environ['NESCAFE23_DATADIR']}dataproducts/mean_pulse_upper_noise.nc",
+)
+def compute_mean_pulse():
+
+    (
+        mean_pulse_lower,
+        mean_pulse_upper,
+        mean_pulse_lower_noise,
+        mean_pulse_upper_noise,
+    ) = tools.compute_mean_pulse()
+
+    mean_pulse_lower.to_netcdf(
+        f"{os.environ['NESCAFE23_DATADIR']}dataproducts/mean_pulse_lower.nc"
+    )
+    mean_pulse_upper.to_netcdf(
+        f"{os.environ['NESCAFE23_DATADIR']}dataproducts/mean_pulse_upper.nc"
+    )
+    mean_pulse_lower_noise.to_netcdf(
+        f"{os.environ['NESCAFE23_DATADIR']}dataproducts/mean_pulse_lower_noise.nc"
+    )
+    mean_pulse_upper_noise.to_netcdf(
+        f"{os.environ['NESCAFE23_DATADIR']}dataproducts/mean_pulse_upper_noise.nc"
+    )
