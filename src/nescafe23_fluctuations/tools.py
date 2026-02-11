@@ -3,6 +3,7 @@
 # Load environment variables from .env file
 import os
 import pickle
+import warnings
 
 import fsspec
 import gsw
@@ -14,7 +15,7 @@ import xarray as xr
 import xrsignal as xrs
 from dotenv import find_dotenv, load_dotenv
 from matplotlib import pyplot as plt
-from scipy import io, signal
+from scipy import io, optimize, signal
 from tqdm import tqdm
 
 load_dotenv(find_dotenv())
@@ -103,14 +104,15 @@ PEAK_BBOXS = {
 # (front_idx, back_idx)
 
 EIG_INDEXS = {
-    "+7": [(0, 0), (1, 1)],
-    "-7": [(0, 0)],
-    "-6": [(0, 0)],
+    "-8": [(0, 0)],
+    "+7": [(0, 0)],
+    "-7": [(1, 0)],
+    "-6": [(0, 2), (1, 1), (2, 0)],
     "+6": [(0, 0)],
-    "-5b": [(0, 0)],
+    "-5b": [(0, 1), (1, 4), (2, 3)],
     "-6b": [(0, 0)],
     "+6b": [(0, 0)],
-    "+7b": [(0, 0)],
+    "+7b": [(1, 0)],
     "-7b": [(0, 0)],
     "-8b": [(0, 0)],
     "+8b": [(0, 0)],
@@ -273,6 +275,7 @@ def open_receptions(time_slice=(90, 120)):
     return dss
 
 
+# TODO remove this function
 def get_fctd(fn, filt=True, z_smooth=100, r_smooth=10e3, r_shift=0):
     """
     Open, shift in range, and smooth fast ctd data
@@ -962,11 +965,7 @@ def compute_n23_ray_variables(
         - 'm_high' : maximum vertical wavenumber along ray
     """
 
-    # open environments
-    fn1 = f"{os.environ['NESCAFE23_DATADIR']}environment_data/dataproducts/full_field_nlm.nc"
-
-    if envi_field is None:
-        envi_field = xr.open_dataset(fn1)
+    envi_field = compute_filtered_fctd_grid(z_smooth=200, r_smooth=15000)
 
     # shift front location
     front_location = 35e3
@@ -975,7 +974,6 @@ def compute_n23_ray_variables(
         "range": (envi_field.range.values + front_location)
     })
 
-    print(envi_field.range[0])
     c = envi_field["c"]
     dcdz_p = envi_field["dcdz_p"]
 
@@ -1417,6 +1415,47 @@ def compute_F_phi_chi(
     return F_phi, F_chi
 
 
+def compute_F_phi_chi_n23(GM_energy):
+    """
+    Compute the theoretical phase and log-amplitude PSDs for the nescafe23 variables specifically
+
+    Parameters
+    ----------
+    GM_energy : float
+        energy level of Garrett-Munk spectrum, X corresponds to zeta0 = $\sqrt(X) \times$ 7.3 [m]
+
+    Returns
+    -------
+    m : np.array
+        array of vertical wavenumbers [rad/m] at which F_phi and F_chi are computed
+    F_phis : dict
+        dictionary of phase power spectral densities for each ray_id.
+    F_chis : dict
+        dictionary of log-amplitude power spectral densities for each ray_id.
+    """
+
+    zeta0 = 7.3 * np.sqrt(GM_energy)
+    rvs = compute_n23_ray_variables(zeta0=zeta0)
+
+    m = 2 * np.pi * np.logspace(-5, 0, 500)[None, :]  # [rad / m]
+
+    F_phis = {}
+    F_chis = {}
+
+    # compute only for ducted paths
+    for ray_id in ["+7", "-7", "+6", "-6"]:
+        F_phis[ray_id] = []
+        F_chis[ray_id] = []
+
+        for n in range(len(rvs[ray_id])):
+            F_phi, F_chi = compute_F_phi_chi(rvs[ray_id][n], m)
+
+            F_phis[ray_id].append(F_phi)
+            F_chis[ray_id].append(F_chi)
+
+    return m, F_phis, F_chis
+
+
 def compute_lambda_phi(
     rv: dict,
     fc: float = 250,
@@ -1607,8 +1646,9 @@ def run_rays(
     if receiver_depths is None:
         receiver_depths = [1072.3225807360088]  # from pressure sensors
 
-    # TODO figure out the right smoothing value to use
-    fctd = compute_filtered_fctd_grid(z_smooth=200, r_smooth=5000)
+    # z_smooth is set to 200 [m]
+    # r_smooth is set to 15 [km]
+    fctd = compute_filtered_fctd_grid(z_smooth=200, r_smooth=15000)
 
     # shift front location
     front_location = 35e3  # m
@@ -1644,7 +1684,7 @@ def run_rays(
         receiver_range,
         num_range_save,
         envi,
-        ztol=10,
+        ztol=1,
         max_iter=500,
     )
 
@@ -1672,7 +1712,7 @@ def run_rays(
         receiver_range,
         num_range_save,
         envi_back,
-        ztol=10,
+        ztol=1,
         max_iter=500,
     )
 
@@ -1689,8 +1729,8 @@ def run_rays(
 
 
 def compute_filtered_fctd_grid(
-    z_smooth: float = 200,
-    r_smooth: float = 5000,
+    z_smooth: float | None = 200,
+    r_smooth: float | None = 5000,
 ):
     """
     Compute and filter FCTD grid data without slicing or stitching.
@@ -1702,10 +1742,12 @@ def compute_filtered_fctd_grid(
 
     Parameters
     ----------
-    z_smooth : float
+    z_smooth : float or None
         vertical smoothing scale in meters. Default is 200 m.
-    r_smooth : float
+        If None, no vertical filtering is applied.
+    r_smooth : float or None
         horizontal smoothing scale in meters. Default is 5000 m.
+        If None, no horizontal filtering is applied.
 
     Returns
     -------
@@ -1756,19 +1798,26 @@ def compute_filtered_fctd_grid(
         "depth": np.arange(0, 6000),
     })
 
-    # Create butterworth filters
-    bz, az = signal.butter(4, 1 / z_smooth, fs=1)
-    br, ar = signal.butter(4, 1 / r_smooth, fs=1 / 500)
+    # Create butterworth filters if smoothing is requested
+    if z_smooth is not None:
+        bz, az = signal.butter(4, 1 / z_smooth, fs=1)
+    if r_smooth is not None:
+        br, ar = signal.butter(4, 1 / r_smooth, fs=1 / 500)
 
     # Apply filters to both variables
     fctd_filtered = {}
     for k, var in enumerate(["tt", "ss"]):
-        fctd_smooth = xrs.filtfilt(
-            xrs.filtfilt(fctd_grid[var], dim="range", b=br, a=ar),
-            dim="depth",
-            b=bz,
-            a=az,
-        )
+        # Start with the gridded data
+        fctd_smooth = fctd_grid[var]
+
+        # Apply range filter if requested
+        if r_smooth is not None:
+            fctd_smooth = xrs.filtfilt(fctd_smooth, dim="range", b=br, a=ar)
+
+        # Apply depth filter if requested
+        if z_smooth is not None:
+            fctd_smooth = xrs.filtfilt(fctd_smooth, dim="depth", b=bz, a=az)
+
         fctd_filtered[var] = fctd_smooth
 
     fctd_filtered = xr.Dataset(fctd_filtered)
@@ -1930,3 +1979,171 @@ def compute_mean_pulse():
         mean_pulse_lower_noise,
         mean_pulse_upper_noise,
     )
+
+
+def estimate_F_phi_chi():
+    r"""
+    Estimate observed $F_{\phi}$ and $F_{\chi}$ for the acoustic receptions.
+
+    Periodograms are computed for each of the receptions and the periodograms are averaged together in the log domain
+
+    Returns
+    -------
+    m_data : np.array
+        array of vertical wavenumbers [1/m] at which $F_\phi$ and $F_\chi$ are estimated
+    F_phi_data : dict
+        dictionary containing arrays of phase power spectral density, $F_\phi$ [rad m]
+    F_chi_data : dict
+        dictionary containing arrays of log-amplitude power spectral density, $F_\chi$ [rad m]
+    F_phi_lm : dict
+        dictionary containing arrays of log-mean phase power spectral density, $F_\phi$ [rad m]
+    F_phi_ls : dict
+        dictionary containing arrays of log-standard deviation of phase power spectral density, $F_\phi$ [rad m]
+    F_chi_lm : dict
+        dictionary containing arrays of log-mean log-amplitude power spectral density, $F_\chi$ [rad m]
+    F_chi_ls : dict
+        dictionary containing arrays of log-standard deviation of log-amplitude power spectral density, $F_\chi$ [rad m]
+    """
+
+    fn = f"{os.environ['NESCAFE23_DATADIR']}dataproducts/wavefront_values.pkl"
+
+    with open(fn, "rb") as f:
+        wavefront_values = pickle.load(f)
+
+    ray_ids = ["+7", "-7", "-6", "+6"]
+
+    F_chi_data = {}
+    F_phi_data = {}
+
+    F_chi_lm = {}
+    F_chi_ls = {}
+    F_phi_lm = {}
+    F_phi_ls = {}
+
+    for ray_id in ray_ids:
+        # extract amplitude, intensity, and phase from wavefront values
+        amp = np.abs(wavefront_values[ray_id])
+        lamp = np.log(amp)
+        phase = np.unwrap(np.angle(wavefront_values[ray_id]), axis=1)
+
+        # remove outliers from phase
+        phase[np.s_[:, np.r_[4:6, 20]]] = np.nan
+        phase = phase - np.nanmean(phase, axis=1)[:, None]
+        phase[np.isnan(phase)] = 0
+
+        # m_data [1/m]
+        # F_phi_data, F_chi_data [rad m]
+        _, F_phi_data[ray_id] = signal.periodogram(phase, fs=1 / 9, axis=1)
+        m_data, F_chi_data[ray_id] = signal.periodogram(lamp, fs=1 / 9, axis=1)
+
+        # remove DC comp
+        m_data = m_data[1:]
+        F_chi_data[ray_id] = F_chi_data[ray_id][:, 1:]
+        F_phi_data[ray_id] = F_phi_data[ray_id][:, 1:]
+
+        # Take mean and standard deviation in log space
+        F_chi_lm[ray_id] = 10 ** np.mean(np.log10(F_chi_data[ray_id]), axis=0)
+        F_chi_ls[ray_id] = 10 ** np.std(np.log10(F_chi_data[ray_id]), axis=0)
+
+        F_phi_lm[ray_id] = 10 ** np.mean(np.log10(F_phi_data[ray_id]), axis=0)
+        F_phi_ls[ray_id] = 10 ** np.std(np.log10(F_phi_data[ray_id]), axis=0)
+
+    return m_data, F_phi_data, F_chi_data, F_phi_lm, F_phi_ls, F_chi_lm, F_chi_ls
+
+
+def phi_chi_spectrum_model(m, GM, phi_noise, chi_noise, ray_id):
+    """
+    phi_chi_spectrum_model - compute model of F_phi and F_chi, GM internal waves, WFT, and white observational noise
+
+    Parameters
+    ----------
+    m : np.array
+        array of vertical wavenumbers [rad/m] at which to compute $F_\phi$ and $F_\chi$
+    GM : float
+        energy level of Garrett-Munk spectrum, X corresponds to zeta0 = $\sqrt(X) \times$ 7.3 [m]
+    phi_noise : float
+        observational noise level for phase power spectral density, $F_\phi$ [rad m]
+    chi_noise : float
+        observational noise level for log-amplitude power spectral density, $F_\chi$ [rad m]
+    ray_id : str
+        ray id for which to compute the model ('+7', '-7', '+6', '-6')
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+
+        zeta0 = 7.3 * np.sqrt(GM)
+        rvs = compute_n23_ray_variables(zeta0=zeta0, ray_ids=[ray_id])
+
+        # using first ray pair for now TODO
+        F_phi, F_chi = compute_F_phi_chi(rvs[ray_id][0], m)
+
+    F_phi_noise = F_phi + phi_noise
+    F_chi_noise = F_chi + chi_noise
+
+    return F_phi_noise, F_chi_noise, F_phi, F_chi
+
+
+def fit_F_phi_chis(m_data, F_phi_lm, F_chi_lm, F_phi_ls, F_chi_ls):
+    """
+    given observation and theory (assuming GM), fit GM energy and
+        observational noise levels to the observations
+
+    Parameters
+    ----------
+    m_data : np.array
+        array of vertical wavenumbers [1/m] at which $F_\phi$ and $F_\chi$ are estimated
+        computed with `estimate_F_phi_chi`
+    F_phi_lm : dict
+        dictionary containing arrays of log-mean phase power spectral density, $F_\phi$ [rad m]
+        computed with `estimate_F_phi_chi`
+    F_chi_lm : dict
+        dictionary containing arrays of log-mean log-amplitude power spectral density, $F_\chi$ [rad m]
+        computed with `estimate_F_phi_chi`
+    F_phi_ls : dict
+        dictionary containing arrays of log-standard deviation of phase power spectral density, $F_\phi$
+        computed with `estimate_F_phi_chi`
+    F_chi_ls : dict
+        dictionary containing arrays of log-standard deviation of log-amplitude power spectral density, $F_\chi$
+        computed with `estimate_F_phi_chi`
+    """
+    m_data_radm = m_data * 2 * np.pi  # convert to [rad/m]
+
+    def residuals(params, ray_id):
+
+        GM, phi_noise, chi_noise = params
+
+        P_phi = np.log10(F_phi_ls[ray_id]) ** 2
+        P_chi = np.log10(F_chi_ls[ray_id]) ** 2
+
+        F_phi_model, F_chi_model, _, _ = phi_chi_spectrum_model(
+            m_data_radm, GM, phi_noise, chi_noise, ray_id
+        )
+
+        y_phi = np.log10(F_phi_model)
+        f_phi = np.log10(F_phi_lm[ray_id])
+        W_phi = np.diag(1 / P_phi)
+
+        y_chi = np.log10(F_chi_model)
+        f_chi = np.log10(F_chi_lm[ray_id])
+        W_chi = np.diag(1 / P_chi)
+
+        L_phi = (y_phi - f_phi).T @ W_phi @ (y_phi - f_phi)
+        L_chi = (y_chi - f_chi).T @ W_chi @ (y_chi - f_chi)
+
+        L = L_phi + L_chi
+
+        return L
+
+    # Fit for each ray id
+
+    # Initial guess for [GM, phi_noise, chi_noise]
+    results = {}
+    for ray_id in tqdm(["+7", "-7", "+6", "-6"]):
+        initial_params = np.array([1, 1e0, 2e-1])
+
+        # Minimize
+        results[ray_id] = optimize.minimize(
+            residuals, initial_params, args=(ray_id,), method="Nelder-Mead"
+        )
+
+    return results
