@@ -134,6 +134,7 @@ def main():
             "compute wavefront values",
             "compute rays",
             "source geometry sweep",
+            "ɸ χ GM least squares fit",
             "exit",
         ],
     ).ask()
@@ -154,6 +155,8 @@ def main():
         compute_rays()
     elif choice == "source geometry sweep":
         source_geometry_sweep()
+    elif choice == "ɸ χ GM least squares fit":
+        phi_chi_LS_fit()
     elif choice == "exit":
         print("Goodbye!")
         return
@@ -565,3 +568,17 @@ def compute_mean_pulse():
     mean_pulse_upper_noise.to_netcdf(
         f"{os.environ['NESCAFE23_DATADIR']}dataproducts/mean_pulse_upper_noise.nc"
     )
+
+
+@check_output_exists(
+    lambda: f"{os.environ['NESCAFE23_DATADIR']}dataproducts/phi_chi_LS_fit.pkl"
+)
+def phi_chi_LS_fit():
+    m_data, _, _, F_phi_lm, F_phi_ls, F_chi_lm, F_chi_ls = tools.estimate_F_phi_chi()
+    results = tools.fit_F_phi_chis(m_data, F_phi_lm, F_chi_lm, F_phi_ls, F_chi_ls)
+
+    with open(
+        f"{os.environ['NESCAFE23_DATADIR']}dataproducts/phi_chi_LS_fit.pkl", "wb"
+    ) as f:
+        pickle.dump(results, f)
+    return
