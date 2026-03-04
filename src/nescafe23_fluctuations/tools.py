@@ -109,7 +109,7 @@ EIG_INDEXS = {
     "-7": [(1, 0)],
     "-6": [(0, 2), (1, 1), (2, 0)],
     "+6": [(0, 0)],
-    "-5b": [(0, 1), (1, 4), (2, 3)],
+    "-5b": [(0, 0), (1, 3), (2, 2)],
     "-6b": [(0, 0)],
     "+6b": [(0, 0)],
     "+7b": [(1, 0)],
@@ -1329,7 +1329,7 @@ def compute_F_phi_chi(
     f: float = 9.216181213401561e-05,  # [rad/s]
 ):
     r"""
-    Given the dictionary of ray variables, computed with `compute_ray_path_variables`, compute power spectral density of phase and log-amplitude ($F_\phi$ and $F_\chi$)
+    Given the dictionary of ray variables, computed with `compute_ray_path_variables`, compute power spectral density of phase and log-amplitude ($F_\\phi$ and $F_\\chi$)
 
     Parameters
     ----------
@@ -1342,14 +1342,14 @@ def compute_F_phi_chi(
     f : float
         Coriolis parameter [rad/s]
     m : np.array
-        array of vertical wavenumbers [rad/m] at which to compute $F_\phi$ and $F_\chi$
+        array of vertical wavenumbers [rad/m] at which to compute $F_\\phi$ and $F_\\chi$
 
     Returns
     -------
     F_phi : np.array
-        array of phase power spectral density, $F_\phi$ [rad m], at each vertical wavenumber in m
+        array of phase power spectral density, $F_\\phi$ [rad m], at each vertical wavenumber in m
     F_chi : np.array
-        array of log-amplitude power spectral density, $F_\chi$ [rad m] at each vertical wavenumber in m
+        array of log-amplitude power spectral density, $F_\\chi$ [rad m] at each vertical wavenumber in m
     """
 
     wc = 2 * np.pi * fc
@@ -1422,7 +1422,7 @@ def compute_F_phi_chi_n23(GM_energy):
     Parameters
     ----------
     GM_energy : float
-        energy level of Garrett-Munk spectrum, X corresponds to zeta0 = $\sqrt(X) \times$ 7.3 [m]
+        energy level of Garrett-Munk spectrum, X corresponds to zeta0 = $\\sqrt(X) \\times$ 7.3 [m]
 
     Returns
     -------
@@ -1644,8 +1644,11 @@ def run_rays(
     if receiver_range is None:
         receiver_range = 153000
     if receiver_depths is None:
-        receiver_depths = [1072.3225807360088]  # from pressure sensors
-
+        # receiver_depths = [1072.3225807360088]  # from pressure sensors
+        receiver_depths = [
+            1139.04728384,
+            378.59703093,
+        ]  # from 12th transmission pressure sensors
     # z_smooth is set to 200 [m]
     # r_smooth is set to 15 [km]
     fctd = compute_filtered_fctd_grid(z_smooth=200, r_smooth=15000)
@@ -1990,19 +1993,19 @@ def estimate_F_phi_chi():
     Returns
     -------
     m_data : np.array
-        array of vertical wavenumbers [1/m] at which $F_\phi$ and $F_\chi$ are estimated
+        array of vertical wavenumbers [1/m] at which $F_\\phi$ and $F_\\chi$ are estimated
     F_phi_data : dict
-        dictionary containing arrays of phase power spectral density, $F_\phi$ [rad m]
+        dictionary containing arrays of phase power spectral density, $F_\\phi$ [rad m]
     F_chi_data : dict
-        dictionary containing arrays of log-amplitude power spectral density, $F_\chi$ [rad m]
+        dictionary containing arrays of log-amplitude power spectral density, $F_\\chi$ [rad m]
     F_phi_lm : dict
-        dictionary containing arrays of log-mean phase power spectral density, $F_\phi$ [rad m]
+        dictionary containing arrays of log-mean phase power spectral density, $F_\\phi$ [rad m]
     F_phi_ls : dict
-        dictionary containing arrays of log-standard deviation of phase power spectral density, $F_\phi$ [rad m]
+        dictionary containing arrays of log-standard deviation of phase power spectral density, $F_\\phi$ [rad m]
     F_chi_lm : dict
-        dictionary containing arrays of log-mean log-amplitude power spectral density, $F_\chi$ [rad m]
+        dictionary containing arrays of log-mean log-amplitude power spectral density, $F_\\chi$ [rad m]
     F_chi_ls : dict
-        dictionary containing arrays of log-standard deviation of log-amplitude power spectral density, $F_\chi$ [rad m]
+        dictionary containing arrays of log-standard deviation of log-amplitude power spectral density, $F_\\chi$ [rad m]
     """
 
     fn = f"{os.environ['NESCAFE23_DATADIR']}dataproducts/wavefront_values.pkl"
@@ -2058,13 +2061,13 @@ def phi_chi_spectrum_model(m, GM, phi_noise, chi_noise, ray_id):
     Parameters
     ----------
     m : np.array
-        array of vertical wavenumbers [rad/m] at which to compute $F_\phi$ and $F_\chi$
+        array of vertical wavenumbers [rad/m] at which to compute $F_\\phi$ and $F_\\chi$
     GM : float
-        energy level of Garrett-Munk spectrum, X corresponds to zeta0 = $\sqrt(X) \times$ 7.3 [m]
+        energy level of Garrett-Munk spectrum, X corresponds to zeta0 = $\\sqrt(X) \\times$ 7.3 [m]
     phi_noise : float
-        observational noise level for phase power spectral density, $F_\phi$ [rad m]
+        observational noise level for phase power spectral density, $F_\\phi$ [rad m]
     chi_noise : float
-        observational noise level for log-amplitude power spectral density, $F_\chi$ [rad m]
+        observational noise level for log-amplitude power spectral density, $F_\\chi$ [rad m]
     ray_id : str
         ray id for which to compute the model ('+7', '-7', '+6', '-6')
     """
@@ -2091,19 +2094,19 @@ def fit_F_phi_chis(m_data, F_phi_lm, F_chi_lm, F_phi_ls, F_chi_ls):
     Parameters
     ----------
     m_data : np.array
-        array of vertical wavenumbers [1/m] at which $F_\phi$ and $F_\chi$ are estimated
+        array of vertical wavenumbers [1/m] at which $F_\\phi$ and $F_\\chi$ are estimated
         computed with `estimate_F_phi_chi`
     F_phi_lm : dict
-        dictionary containing arrays of log-mean phase power spectral density, $F_\phi$ [rad m]
+        dictionary containing arrays of log-mean phase power spectral density, $F_\\phi$ [rad m]
         computed with `estimate_F_phi_chi`
     F_chi_lm : dict
-        dictionary containing arrays of log-mean log-amplitude power spectral density, $F_\chi$ [rad m]
+        dictionary containing arrays of log-mean log-amplitude power spectral density, $F_\\chi$ [rad m]
         computed with `estimate_F_phi_chi`
     F_phi_ls : dict
-        dictionary containing arrays of log-standard deviation of phase power spectral density, $F_\phi$
+        dictionary containing arrays of log-standard deviation of phase power spectral density, $F_\\phi$
         computed with `estimate_F_phi_chi`
     F_chi_ls : dict
-        dictionary containing arrays of log-standard deviation of log-amplitude power spectral density, $F_\chi$
+        dictionary containing arrays of log-standard deviation of log-amplitude power spectral density, $F_\\chi$
         computed with `estimate_F_phi_chi`
     """
     m_data_radm = m_data * 2 * np.pi  # convert to [rad/m]
