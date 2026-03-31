@@ -1661,7 +1661,7 @@ def run_rays(
     c = fctd["c"]
 
     bathy = xr.DataArray(
-        np.linspace(4908, 4908, 100),  # flat bottom
+        np.linspace(5000, 5000, 100),  # flat bottom
         dims=["range"],
         coords={"range": np.linspace(0, 200e3, 100)},
     )
@@ -2054,7 +2054,7 @@ def estimate_F_phi_chi():
     return m_data, F_phi_data, F_chi_data, F_phi_lm, F_phi_ls, F_chi_lm, F_chi_ls
 
 
-def phi_chi_spectrum_model(m, GM, phi_noise, chi_noise, ray_id):
+def phi_chi_spectrum_model(m, GM, phi_noise, chi_noise, ray_id, all_paths=False):
     """
     phi_chi_spectrum_model - compute model of F_phi and F_chi, GM internal waves, WFT, and white observational noise
 
@@ -2070,6 +2070,8 @@ def phi_chi_spectrum_model(m, GM, phi_noise, chi_noise, ray_id):
         observational noise level for log-amplitude power spectral density, $F_\\chi$ [rad m]
     ray_id : str
         ray id for which to compute the model ('+7', '-7', '+6', '-6')
+    all_paths : bool, optional
+        whether to compute the model for all paths (default: False)
     """
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -2078,12 +2080,27 @@ def phi_chi_spectrum_model(m, GM, phi_noise, chi_noise, ray_id):
         rvs = compute_n23_ray_variables(zeta0=zeta0, ray_ids=[ray_id])
 
         # using first ray pair for now TODO
-        F_phi, F_chi = compute_F_phi_chi(rvs[ray_id][0], m)
+        if all_paths:
+            F_phis = []
+            F_chis = []
+            F_phis_noise = []
+            F_chis_noise = []
+            for k in range(len(rvs[ray_id])):
+                F_phi, F_chi = compute_F_phi_chi(rvs[ray_id][k], m)
+                F_phis.append(F_phi)
+                F_chis.append(F_chi)
 
-    F_phi_noise = F_phi + phi_noise
-    F_chi_noise = F_chi + chi_noise
+                F_phis_noise.append(F_phi + phi_noise)
+                F_chis_noise.append(F_chi + chi_noise)
 
-    return F_phi_noise, F_chi_noise, F_phi, F_chi
+            return F_phis_noise, F_chis_noise, F_phis, F_chis
+        else:
+            F_phi, F_chi = compute_F_phi_chi(rvs[ray_id][0], m)
+
+            F_phi_noise = F_phi + phi_noise
+            F_chi_noise = F_chi + chi_noise
+
+            return F_phi_noise, F_chi_noise, F_phi, F_chi
 
 
 def fit_F_phi_chis(m_data, F_phi_lm, F_chi_lm, F_phi_ls, F_chi_ls):

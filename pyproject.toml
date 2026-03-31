@@ -38,7 +38,8 @@ dependencies = [
   "seaborn",
   "gsw",
   "geopy",
-  "panel"
+  "panel",
+  "h5py"
 ]
 
 [project.scripts]
