@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 
 [project]
-name = "NESCAFE23_fluctuations"
+name = "n23_fluctuations_ragland"
 authors = [
   { name = "John Ragland", email = "jragland96@gmail.com" },
 ]
@@ -27,24 +27,22 @@ classifiers = [
 ]
 dynamic = ["version"]
 dependencies = [
-  "python-dotenv",
+  "nescafe23",
   "pygenray",
-  "tqdm",
-  "fsspec",
-  "xarray[complete]",
   "questionary",
-  "xrsignal",
   "cmocean",
   "seaborn",
-  "gsw",
   "geopy",
   "panel",
-  "h5py"
 ]
 
+[tool.uv.sources]
+nescafe23 = { workspace = true }
+pygenray = { git = "https://github.com/John-Ragland/pygenray", branch = "main" }
+
 [project.scripts]
-nescafe23_processing = "nescafe23_fluctuations.cli:main"
-nescafe23_panel = "nescafe23_fluctuations.cli:serve_panel_apps"
+nescafe23_processing = "n23_fluctuations_ragland.cli:main"
+nescafe23_panel = "n23_fluctuations_ragland.cli:serve_panel_apps"
 
 [project.urls]
 Homepage = "https://github.com/John-Ragland/NESCAFE23_fluctuations"
@@ -75,7 +73,7 @@ docs = [
 
 [tool.hatch]
 version.source = "vcs"
-build.hooks.vcs.version-file = "src/nescafe23_fluctuations/_version.py"
+build.hooks.vcs.version-file = "src/n23_fluctuations_ragland/_version.py"
 
 [tool.hatch.envs.default]
 dependency-groups = ["dev"]
@@ -99,7 +97,7 @@ testpaths = [
 
 
 [tool.coverage]
-run.source = ["nescafe23_fluctuations"]
+run.source = ["n23_fluctuations_ragland"]
 report.exclude_also = [
   '\.\.\.',
   'if typing.TYPE_CHECKING:',
@@ -116,7 +114,7 @@ disallow_untyped_defs = false
 disallow_incomplete_defs = false
 
 [[tool.mypy.overrides]]
-module = "nescafe23_fluctuations.*"
+module = "n23_fluctuations_ragland.*"
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 

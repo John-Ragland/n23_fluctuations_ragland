@@ -3,10 +3,10 @@ from __future__ import annotations
 import importlib.metadata
 from typing import Any
 
-project = "NESCAFE23_fluctuations"
+project = "n23_fluctuations_ragland"
 copyright = "2025, John Ragland"
 author = "John Ragland"
-version = release = importlib.metadata.version("nescafe23_fluctuations")
+version = release = importlib.metadata.version("n23_fluctuations_ragland")
 
 extensions = [
     "myst_parser",
