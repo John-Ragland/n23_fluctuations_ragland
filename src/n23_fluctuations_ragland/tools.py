@@ -11,6 +11,7 @@ import xarray as xr
 import xrsignal as xrs
 from matplotlib import pyplot as plt
 from nescafe23 import compute_filtered_fctd_grid, open_receptions, parse_ray_id
+from nescafe23.data import get_data_dir
 from scipy import io, optimize, signal
 from tqdm import tqdm
 
@@ -341,7 +342,7 @@ def get_peak_location(dss, Tx_idxs=np.arange(23)):
             env_slice = 20 * np.log10(
                 np.abs(bf.sel({"time": slice(t1, t2), "angle": slice(th1, th2)}))
             )
-            flat_idx = env_slice.argmax().item()
+            flat_idx = np.argmax(env_slice.data)
             tmax_idx, thmax_idx = np.unravel_index(flat_idx, env_slice.shape)
             tmax = env_slice.time[tmax_idx].values
             thmax = env_slice.angle[thmax_idx].values
@@ -1626,7 +1627,7 @@ def estimate_F_phi_chi():
         dictionary containing arrays of log-standard deviation of log-amplitude power spectral density, $F_\\chi$ [rad m]
     """
 
-    fn = f"{os.environ['NESCAFE23_DATADIR']}dataproducts/wavefront_values.pkl"
+    fn = get_data_dir() / "dataproducts" / "wavefront_values.pkl"
 
     with open(fn, "rb") as f:
         wavefront_values = pickle.load(f)

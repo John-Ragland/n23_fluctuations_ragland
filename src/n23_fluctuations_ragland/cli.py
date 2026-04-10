@@ -8,6 +8,7 @@ import numpy as np
 import pygenray as pr
 import questionary
 import xarray as xr
+from nescafe23 import convert_to_xarray
 from nescafe23.data import get_data_dir
 from scipy import signal
 
@@ -119,6 +120,11 @@ def run_all_processing():
     processing_steps = [
         ("Step 1: Computing arrival time offset", compute_arrival_time_offset),
         ("Step 2: Estimating peak locations", estimate_peak_locations),
+        ("Step 3: Computing wavefront values", get_wavefront_values),
+        ("Step 4: Computing mean pulse", compute_mean_pulse),
+        ("Step 5: Computing rays", compute_rays),
+        ("Step 6: Source geometry sweep", source_geometry_sweep),
+        ("Step 7: ɸ χ GM least squares fit", phi_chi_LS_fit),
     ]
 
     for step_name, step_func in processing_steps:
@@ -149,7 +155,7 @@ def compute_arrival_time_offset():
 
     dss = []
     for fn in fns:
-        dss.append(tools.convert_to_xarray(fn))
+        dss.append(convert_to_xarray(fn))
 
     depth_grid_up = np.linspace(125, 540, 50)
     depth_grid_down = np.linspace(885, 1315, 50)
@@ -239,6 +245,7 @@ def compute_arrival_time_offset():
         / "figures"
         / "common_arrival_time_shift_estimation.pdf"
     )
+    figure_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(figure_path, bbox_inches="tight")
 
     with open(T_t_path, "wb") as f:
