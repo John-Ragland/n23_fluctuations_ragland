@@ -181,4 +181,6 @@ messages_control.disable = [
   # Intentional patterns in cli.py
   "broad-exception-caught",
   "import-outside-toplevel",
+  # nescafe23 workspace dep doesn't exist yet; _version is generated at build time
+  "import-error",
 ]
