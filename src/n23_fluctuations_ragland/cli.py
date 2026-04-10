@@ -427,7 +427,7 @@ def serve_panel_apps():
         *[str(f) for f in app_files],
         "--show",
     ]
-    subprocess.run(cmd)
+    subprocess.run(cmd, check=False)
 
 
 @check_output_exists(
