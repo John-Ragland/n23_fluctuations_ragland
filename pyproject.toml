@@ -41,8 +41,8 @@ nescafe23 = { workspace = true }
 pygenray = { git = "https://github.com/John-Ragland/pygenray", branch = "main" }
 
 [project.scripts]
-nescafe23_processing = "n23_fluctuations_ragland.cli:main"
-nescafe23_panel = "n23_fluctuations_ragland.cli:serve_panel_apps"
+n23_fluctuation_analysis = "n23_fluctuations_ragland.cli:main"
+n23_panel = "n23_fluctuations_ragland.cli:serve_panel_apps"
 
 [project.urls]
 Homepage = "https://github.com/John-Ragland/NESCAFE23_fluctuations"
