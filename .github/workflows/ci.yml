@@ -22,14 +22,14 @@ jobs:
     name: Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
 
       - uses: pre-commit/action@v3.0.1
         with:
@@ -55,7 +55,7 @@ jobs:
       # Check out the NESCAFE23 parent workspace (with all submodules so every
       # workspace member has its pyproject.toml and uv can resolve the graph).
       - name: Checkout NESCAFE23 workspace
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: John-Ragland/NESCAFE23
           submodules: false
@@ -64,17 +64,17 @@ jobs:
 
       # Override the committed submodule with the code from this PR/branch.
       - name: Checkout n23_fluctuations_ragland
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: workspace/projects/n23_fluctuations_ragland
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
 
       # Only sync this package and its transitive deps (nescafe23 + direct
       # deps), not the entire workspace.
@@ -91,6 +91,6 @@ jobs:
           --durations=20
 
       - name: Upload coverage report
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
