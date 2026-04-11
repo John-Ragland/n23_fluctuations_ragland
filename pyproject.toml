@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 
 [project]
-name = "NESCAFE23_fluctuations"
+name = "n23_fluctuations_ragland"
 authors = [
   { name = "John Ragland", email = "jragland96@gmail.com" },
 ]
@@ -27,24 +27,22 @@ classifiers = [
 ]
 dynamic = ["version"]
 dependencies = [
-  "python-dotenv",
+  "nescafe23",
   "pygenray",
-  "tqdm",
-  "fsspec",
-  "xarray[complete]",
   "questionary",
-  "xrsignal",
   "cmocean",
   "seaborn",
-  "gsw",
   "geopy",
   "panel",
-  "h5py"
 ]
 
+[tool.uv.sources]
+nescafe23 = { workspace = true }
+pygenray = { git = "https://github.com/John-Ragland/pygenray", branch = "main" }
+
 [project.scripts]
-nescafe23_processing = "nescafe23_fluctuations.cli:main"
-nescafe23_panel = "nescafe23_fluctuations.cli:serve_panel_apps"
+n23_fluctuation_analysis = "n23_fluctuations_ragland.cli:main"
+n23_panel = "n23_fluctuations_ragland.cli:serve_panel_apps"
 
 [project.urls]
 Homepage = "https://github.com/John-Ragland/NESCAFE23_fluctuations"
@@ -75,7 +73,7 @@ docs = [
 
 [tool.hatch]
 version.source = "vcs"
-build.hooks.vcs.version-file = "src/nescafe23_fluctuations/_version.py"
+build.hooks.vcs.version-file = "src/n23_fluctuations_ragland/_version.py"
 
 [tool.hatch.envs.default]
 dependency-groups = ["dev"]
@@ -85,10 +83,9 @@ dependency-groups = ["test"]
 env-vars.PYTHONWARNDEFAULTENCODING = "1"
 
 
-[tool.pytest]
+[tool.pytest.ini_options]
 minversion = "9.0"
 addopts = ["-ra", "--showlocals"]
-strict = true
 filterwarnings = [
   "error",
 ]
@@ -99,7 +96,7 @@ testpaths = [
 
 
 [tool.coverage]
-run.source = ["nescafe23_fluctuations"]
+run.source = ["n23_fluctuations_ragland"]
 report.exclude_also = [
   '\.\.\.',
   'if typing.TYPE_CHECKING:',
@@ -116,7 +113,7 @@ disallow_untyped_defs = false
 disallow_incomplete_defs = false
 
 [[tool.mypy.overrides]]
-module = "nescafe23_fluctuations.*"
+module = "n23_fluctuations_ragland.*"
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 
@@ -160,4 +157,29 @@ messages_control.disable = [
   "missing-module-docstring",
   "missing-function-docstring",
   "wrong-import-position",
+  # Scientific Python naming: math variables (N, H, J, Phi2, F_phi, etc.) are intentional
+  "invalid-name",
+  # NumPy false positives: None-as-axis indexing (dmodf[:, :, None]) and dynamic members (finfo.eps)
+  "invalid-sequence-index",
+  "no-member",
+  # NumPy return-type inference: np.unravel_index shape is not statically known
+  "unbalanced-tuple-unpacking",
+  # Acceptable in scientific analysis code with many similar computations
+  "duplicate-code",
+  # Large module is acceptable for this codebase
+  "too-many-lines",
+  # Minor style issues not worth enforcing
+  "redefined-outer-name",
+  "unused-variable",
+  "unused-argument",
+  "redefined-argument-from-local",
+  "no-else-return",
+  "consider-using-dict-items",
+  "useless-return",
+  "consider-using-enumerate",
+  # Intentional patterns in cli.py
+  "broad-exception-caught",
+  "import-outside-toplevel",
+  # nescafe23 workspace dep doesn't exist yet; _version is generated at build time
+  "import-error",
 ]

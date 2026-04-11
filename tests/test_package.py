@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import importlib.metadata
 
-import nescafe23_fluctuations as m
+import n23_fluctuations_ragland as m
 
 
 def test_version():
-    assert importlib.metadata.version("nescafe23_fluctuations") == m.__version__
+    assert importlib.metadata.version("n23_fluctuations_ragland") == m.__version__

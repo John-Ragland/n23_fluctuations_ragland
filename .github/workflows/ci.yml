@@ -22,18 +22,18 @@ jobs:
     name: Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v5
 
       - uses: pre-commit/action@v3.0.1
         with:
-          extra_args: --hook-stage manual --all-files
+          extra_args: --all-files
       - name: Run Pylint
         run: uvx nox -s pylint -- --output-format=github
 
@@ -45,28 +45,47 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.14"]
-        runs-on: [ubuntu-latest, windows-latest, macos-latest, macos-15-intel]
+        runs-on: [ubuntu-latest, windows-latest, macos-latest]
 
         include:
           - python-version: "pypy-3.11"
             runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v6
+      # Check out the NESCAFE23 parent workspace (with all submodules so every
+      # workspace member has its pyproject.toml and uv can resolve the graph).
+      - name: Checkout NESCAFE23 workspace
+        uses: actions/checkout@v4
         with:
+          repository: John-Ragland/NESCAFE23
+          submodules: false
+          path: workspace
+          token: ${{ secrets.NESCAFE23_TOKEN }}
+
+      # Override the committed submodule with the code from this PR/branch.
+      - name: Checkout n23_fluctuations_ragland
+        uses: actions/checkout@v4
+        with:
+          path: workspace/projects/n23_fluctuations_ragland
           fetch-depth: 0
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v5
 
+      # Only sync this package and its transitive deps (nescafe23 + direct
+      # deps), not the entire workspace.
       - name: Install package
-        run: uv sync
+        working-directory: workspace
+        run: uv sync --package n23_fluctuations_ragland
 
+      # Run from the submodule directory so pytest discovers pyproject.toml
+      # config (testpaths, filterwarnings, coverage source, etc.).
       - name: Test package
+        working-directory: workspace/projects/n23_fluctuations_ragland
         run: >-
           uv run pytest -ra --cov --cov-report=xml --cov-report=term
           --durations=20

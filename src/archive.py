@@ -11,7 +11,7 @@ import xrsignal as xrs
 from dotenv import find_dotenv, load_dotenv
 from scipy import io, signal
 
-from nescafe23_fluctuations.tools import aog_vsdg
+from n23_fluctuations_ragland.tools import aog_vsdg
 
 load_dotenv(find_dotenv())
 

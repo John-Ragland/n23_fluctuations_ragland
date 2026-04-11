@@ -32,15 +32,33 @@ def lint(session: nox.Session) -> None:
     )
 
 
-@nox.session
+@nox.session(venv_backend="none")
 def pylint(session: nox.Session) -> None:
     """
     Run Pylint.
     """
-    # This needs to be installed into the package environment, and is slower
-    # than a pre-commit check
-    session.install("-e.", "pylint>=3.2")
-    session.run("pylint", "nescafe23_fluctuations", *session.posargs)
+    # Use the project's .venv so all dependencies are available for import resolution.
+    # The uv workspace dependency (nescafe23) is not yet a workspace member, so we
+    # can't use `uv run` or `session.install("-e.")` here.
+    # Ensure the venv exists before installing pylint into it.
+    # Cannot use `uv sync` here because `nescafe23` is not a workspace member
+    # in standalone (non-workspace) checkouts (e.g. CI pre-commit job).
+    session.run("uv", "venv", "--allow-existing", external=True)
+    session.run(
+        "uv",
+        "pip",
+        "install",
+        "--python",
+        ".venv",
+        "pylint>=3.2",
+        external=True,
+    )
+    session.run(
+        ".venv/bin/pylint",
+        "src/n23_fluctuations_ragland",
+        *session.posargs,
+        external=True,
+    )
 
 
 @nox.session
@@ -99,7 +117,7 @@ def build_api_docs(session: nox.Session) -> None:
         "--module-first",
         "--no-toc",
         "--force",
-        "src/nescafe23_fluctuations",
+        "src/n23_fluctuations_ragland",
     )
 
 
