@@ -45,7 +45,7 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.14"]
-        runs-on: [ubuntu-latest, windows-latest, macos-latest, macos-13]
+        runs-on: [ubuntu-latest, windows-latest, macos-latest]
 
         include:
           - python-version: "pypy-3.11"
@@ -60,6 +60,7 @@ jobs:
           repository: John-Ragland/NESCAFE23
           submodules: true
           path: workspace
+          token: ${{ secrets.NESCAFE23_TOKEN }}
 
       # Override the committed submodule with the code from this PR/branch.
       - name: Checkout n23_fluctuations_ragland
