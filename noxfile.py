@@ -40,6 +40,10 @@ def pylint(session: nox.Session) -> None:
     # Use the project's .venv so all dependencies are available for import resolution.
     # The uv workspace dependency (nescafe23) is not yet a workspace member, so we
     # can't use `uv run` or `session.install("-e.")` here.
+    # Ensure the venv exists before installing pylint into it.
+    # Cannot use `uv sync` here because `nescafe23` is not a workspace member
+    # in standalone (non-workspace) checkouts (e.g. CI pre-commit job).
+    session.run("uv", "venv", "--allow-existing", external=True)
     session.run(
         "uv",
         "pip",
