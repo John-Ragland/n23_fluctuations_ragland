@@ -61,14 +61,15 @@ def pylint(session: nox.Session) -> None:
     )
 
 
-@nox.session
+@nox.session(venv_backend="none")
 def tests(session: nox.Session) -> None:
     """
     Run the unit and regular tests.
+
+    Uses the workspace-managed venv via `uv run` so that workspace dependencies
+    (e.g. nescafe23) are available without needing to be on PyPI.
     """
-    test_deps = nox.project.dependency_groups(PROJECT, "test")
-    session.install("-e.", *test_deps)
-    session.run("pytest", *session.posargs)
+    session.run("uv", "run", "pytest", *session.posargs, external=True)
 
 
 @nox.session(reuse_venv=True, default=False)
