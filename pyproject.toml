@@ -85,12 +85,8 @@ env-vars.PYTHONWARNDEFAULTENCODING = "1"
 
 [tool.pytest.ini_options]
 minversion = "9.0"
-<<<<<<< Updated upstream
-addopts = ["-ra", "--showlocals"]
-=======
 addopts = ["-ra", "--showlocals", "--import-mode=importlib"]
 strict_markers = true
->>>>>>> Stashed changes
 filterwarnings = [
   "error",
 ]

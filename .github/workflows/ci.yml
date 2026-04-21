@@ -52,33 +52,20 @@ jobs:
             runs-on: ubuntu-latest
 
     steps:
-<<<<<<< Updated upstream
-      # Check out the NESCAFE23 parent workspace (with all submodules so every
-      # workspace member has its pyproject.toml and uv can resolve the graph).
-      - name: Checkout NESCAFE23 workspace
-        uses: actions/checkout@v4
-=======
       # Check out the NESCAFE23 parent workspace so uv can resolve workspace
       # dependencies (nescafe23). Submodules are not initialized here — only
       # the packages needed for this project will be checked out below.
       - name: Checkout NESCAFE23 workspace
         uses: actions/checkout@v6
->>>>>>> Stashed changes
         with:
           repository: John-Ragland/NESCAFE23
           submodules: false
           path: workspace
           token: ${{ secrets.NESCAFE23_TOKEN }}
 
-<<<<<<< Updated upstream
-      # Override the committed submodule with the code from this PR/branch.
-      - name: Checkout n23_fluctuations_ragland
-        uses: actions/checkout@v4
-=======
       # Override the committed submodule pointer with the code from this PR.
       - name: Checkout n23_fluctuations_ragland
         uses: actions/checkout@v6
->>>>>>> Stashed changes
         with:
           path: workspace/projects/n23_fluctuations_ragland
           fetch-depth: 0
@@ -96,17 +83,10 @@ jobs:
         working-directory: workspace
         run: uv sync --package n23_fluctuations_ragland
 
-<<<<<<< Updated upstream
-      # Run from the submodule directory so pytest discovers pyproject.toml
-      # config (testpaths, filterwarnings, coverage source, etc.).
-      - name: Test package
-        working-directory: workspace/projects/n23_fluctuations_ragland
-=======
       # Run from workspace root with explicit test path so only this project's
       # tests are collected, and --cov targets the right package.
       - name: Test package
         working-directory: workspace
->>>>>>> Stashed changes
         run: >-
           uv run pytest projects/n23_fluctuations_ragland/tests
           -ra --cov=n23_fluctuations_ragland --cov-report=xml --cov-report=term
