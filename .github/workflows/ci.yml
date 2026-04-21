@@ -33,9 +33,7 @@ jobs:
 
       - uses: pre-commit/action@v3.0.1
         with:
-          extra_args: --all-files
-      - name: Run Pylint
-        run: uvx nox -s pylint -- --output-format=github
+          extra_args: --hook-stage manual --all-files
 
   checks:
     name: Check Python ${{ matrix.python-version }} on ${{ matrix.runs-on }}
@@ -88,8 +86,8 @@ jobs:
       - name: Test package
         working-directory: workspace
         run: >-
-          uv run pytest projects/n23_fluctuations_ragland/tests
-          -ra --cov=n23_fluctuations_ragland --cov-report=xml --cov-report=term
+          uv run pytest projects/n23_fluctuations_ragland/tests -ra
+          --cov=n23_fluctuations_ragland --cov-report=xml --cov-report=term
           --durations=20
 
       - name: Upload coverage report

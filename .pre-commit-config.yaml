@@ -75,3 +75,12 @@ repos:
       - id: check-dependabot
       - id: check-github-workflows
       - id: check-readthedocs
+
+  - repo: local
+    hooks:
+      - id: pylint
+        name: pylint
+        entry: uvx nox -s pylint
+        language: system
+        pass_filenames: false
+        stages: [manual, pre-push]
