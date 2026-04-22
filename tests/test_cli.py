@@ -9,16 +9,19 @@ from __future__ import annotations
 
 def test_cli_imports():
     """All CLI functions can be imported without error."""
-    from n23_fluctuations_ragland.cli import (  # noqa: F401
-        compute_arrival_time_offset,
-        compute_mean_pulse,
-        compute_rays,
-        estimate_peak_locations,
-        get_wavefront_values,
-        phi_chi_LS_fit,
-        run_all_processing,
-        source_geometry_sweep,
-    )
+    import n23_fluctuations_ragland.cli as cli
+
+    for name in [
+        "compute_arrival_time_offset",
+        "compute_mean_pulse",
+        "compute_rays",
+        "estimate_peak_locations",
+        "get_wavefront_values",
+        "phi_chi_LS_fit",
+        "run_all_processing",
+        "source_geometry_sweep",
+    ]:
+        assert hasattr(cli, name), f"cli.{name} is missing"
 
 
 def test_tools_has_required_functions():
@@ -51,7 +54,9 @@ def test_convert_to_xarray_not_on_tools():
         "convert_to_xarray should be imported from nescafe23, not accessed via tools"
     )
 
-    from nescafe23 import convert_to_xarray  # noqa: F401
+    from nescafe23 import convert_to_xarray
+
+    assert convert_to_xarray is not None
 
 
 def test_check_output_exists_runs_when_no_file(tmp_path):
@@ -134,7 +139,7 @@ def test_figures_dir_created(tmp_path, monkeypatch):
 
     # Point figure_path to a subdir that doesn't exist yet
     figures_dir = tmp_path / "figures"
-    expected_path = figures_dir / "common_arrival_time_shift_estimation.pdf"
+    figures_dir / "common_arrival_time_shift_estimation.pdf"
 
     # Patch Path(__file__) parent resolution by monkeypatching the figure path
     # We check mkdir is called via Path.mkdir — instead just verify the logic
