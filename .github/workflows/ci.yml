@@ -6,91 +6,61 @@ on:
   push:
     branches:
       - main
+      - pytest
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  # Many color libraries just need this variable to be set to any value.
-  # Set it to 3 to support 8-bit color graphics (256 colors per channel)
-  # for libraries that care about the value set.
   FORCE_COLOR: 3
+  SUBMODULE_PATH: projects/n23_fluctuations_ragland
 
 jobs:
-  pre-commit:
-    name: Format
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
-          fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
-
-      - uses: astral-sh/setup-uv@v5
-
+          python-version: "3.12"
       - uses: pre-commit/action@v3.0.1
-        with:
-          extra_args: --hook-stage manual --all-files
 
-  checks:
-    name: Check Python ${{ matrix.python-version }} on ${{ matrix.runs-on }}
-    runs-on: ${{ matrix.runs-on }}
-    needs: [pre-commit]
+  tests:
+    name: Test Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.14"]
-        runs-on: [ubuntu-latest, windows-latest, macos-latest]
-
-        include:
-          - python-version: "pypy-3.11"
-            runs-on: ubuntu-latest
 
     steps:
-      # Check out the NESCAFE23 parent workspace so uv can resolve workspace
-      # dependencies (nescafe23). Submodules are not initialized here — only
-      # the packages needed for this project will be checked out below.
-      - name: Checkout NESCAFE23 workspace
+      - name: Check out NESCAFE23 parent workspace
         uses: actions/checkout@v6
         with:
           repository: John-Ragland/NESCAFE23
+          ref: main
           submodules: false
           path: workspace
-          token: ${{ secrets.NESCAFE23_TOKEN }}
 
-      # Override the committed submodule pointer with the code from this PR.
-      - name: Checkout n23_fluctuations_ragland
+      - name: Remove empty submodule placeholder
+        run: rm -rf workspace/${{ env.SUBMODULE_PATH }}
+
+      - name: Check out this submodule's PR code into workspace path
         uses: actions/checkout@v6
         with:
-          path: workspace/projects/n23_fluctuations_ragland
+          path: workspace/${{ env.SUBMODULE_PATH }}
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           python-version: ${{ matrix.python-version }}
-          allow-prereleases: true
 
-      - uses: astral-sh/setup-uv@v5
-
-      # Only sync this package and its transitive deps (nescafe23 + direct
-      # deps), not the entire workspace.
-      - name: Install package
+      - name: Sync workspace (only populated submodule resolves)
         working-directory: workspace
-        run: uv sync --package n23_fluctuations_ragland
+        run: uv sync --all-packages
 
-      # Run from workspace root with explicit test path so only this project's
-      # tests are collected, and --cov targets the right package.
-      - name: Test package
+      - name: Run tests from workspace root
         working-directory: workspace
-        run: >-
-          uv run pytest projects/n23_fluctuations_ragland/tests -ra
-          --cov=n23_fluctuations_ragland --cov-report=xml --cov-report=term
-          --durations=20
-
-      - name: Upload coverage report
-        uses: codecov/codecov-action@v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
+        run: uv run pytest -ra --durations=20

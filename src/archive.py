@@ -157,7 +157,7 @@ def create_2D_ocean_slice(
         ),
     }
 
-    for var in SION.keys():
+    for var in SION:
         # Add 10000 meter
         SION[var] = xr.concat(
             (
@@ -462,7 +462,7 @@ def create_2D_ocean_slice_nlm(
         ),
     }
 
-    for var in SION.keys():
+    for var in SION:
         # Add 10000 meter
         SION[var] = xr.concat(
             (
