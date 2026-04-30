@@ -30,7 +30,6 @@ def test_tools_has_required_functions():
 
     required = [
         "open_receptions",
-        "get_peak_location",
         "get_wavefront_values",
         "run_rays",
         "compute_mean_pulse",

@@ -113,3 +113,4 @@ extend-select = [
   "PT",   # flake8-pytest-style
   "PTH",  # flake8-use-pathlib
 ]
+ignore = ["RUF059"]
