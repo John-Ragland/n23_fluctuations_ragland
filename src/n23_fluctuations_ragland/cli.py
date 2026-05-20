@@ -9,6 +9,7 @@ import numpy as np
 import pygenray as pr
 import questionary
 import xarray as xr
+from nescafe23 import convert_to_xarray
 from nescafe23.data import get_data_dir
 from scipy import signal
 
@@ -65,7 +66,7 @@ def check_output_exists(*output_paths):
 def main():
     """Interactive CLI menu."""
     try:
-        data_dir = get_data_dir()
+        get_data_dir()
     except OSError:
         print("\nNESCAFE23_DATADIR is not set.")
         print("Run 'nescafe23-init' to configure the data directory, then try again.")
@@ -120,6 +121,11 @@ def run_all_processing():
     processing_steps = [
         ("Step 1: Computing arrival time offset", compute_arrival_time_offset),
         ("Step 2: Estimating peak locations", estimate_peak_locations),
+        ("Step 3: Computing wavefront values", get_wavefront_values),
+        ("Step 4: Computing mean pulse", compute_mean_pulse),
+        ("Step 5: Computing rays", compute_rays),
+        ("Step 6: Source geometry sweep", source_geometry_sweep),
+        ("Step 7: ɸ χ GM least squares fit", phi_chi_LS_fit),
     ]
 
     for step_name, step_func in processing_steps:
@@ -150,7 +156,7 @@ def compute_arrival_time_offset():
 
     dss = []
     for fn in fns:
-        dss.append(n23.convert_to_xarray(fn))
+        dss.append(convert_to_xarray(fn))
 
     depth_grid_up = np.linspace(125, 540, 50)
     depth_grid_down = np.linspace(885, 1315, 50)
@@ -197,7 +203,7 @@ def compute_arrival_time_offset():
         Rxxs.append(Rxx)
 
     dT_t_upper = []
-    for k, Rxx in enumerate(Rxxs):
+    for _k, Rxx in enumerate(Rxxs):
         Rxx_sum = np.sum(Rxx, axis=0)
         idx = np.argmax(Rxx_sum)
         dT_t_upper.append(Rxx_taus[idx])
@@ -246,9 +252,10 @@ def compute_arrival_time_offset():
         / "figures"
         / "common_arrival_time_shift_estimation.pdf"
     )
+    figure_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(figure_path, bbox_inches="tight")
 
-    with open(T_t_path, "wb") as f:
+    with Path(T_t_path).open("wb") as f:
         pickle.dump(
             {
                 "dT_t": dT_avg,
@@ -266,10 +273,12 @@ def estimate_peak_locations():
     """
     data_dir = get_data_dir()
     dss = tools.open_receptions()
-    times, angles, snrs = tools.get_peak_location(dss)
+    times, angles, snrs, upper_times, upper_angles, upper_snrs = (
+        tools.get_peak_location(dss)
+    )
     peak_locations = {"times": times, "angles": angles, "snrs": snrs}
 
-    with open(data_dir / "dataproducts" / "peak_locations.pkl", "wb") as f:
+    with (data_dir / "dataproducts" / "peak_locations.pkl").open("wb") as f:
         pickle.dump(peak_locations, f)
 
 
@@ -287,7 +296,7 @@ def get_wavefront_values():
             "Peak locations not found. Please run 'estimate peak locations' first."
         )
 
-    with open(peak_locations_path, "rb") as f:
+    with peak_locations_path.open("rb") as f:
         peak_locations = pickle.load(f)
 
     times = peak_locations["times"]
@@ -295,7 +304,7 @@ def get_wavefront_values():
 
     wavefront_values = tools.get_wavefront_values(dss, times, angles)
 
-    with open(data_dir / "dataproducts" / "wavefront_values.pkl", "wb") as f:
+    with (data_dir / "dataproducts" / "wavefront_values.pkl").open("wb") as f:
         pickle.dump(wavefront_values, f)
 
 
@@ -319,7 +328,7 @@ def compute_rays():
         "geo": geo,
     }
 
-    with open(data_dir / "dataproducts" / "ray_run_forward_back.pkl", "wb") as f:
+    with (data_dir / "dataproducts" / "ray_run_forward_back.pkl").open("wb") as f:
         pickle.dump(ray_data, f)
 
 
@@ -345,27 +354,31 @@ def source_geometry_sweep():
     )
     envi = pr.OceanEnvironment2D(sound_speed=c, bathymetry=bathy)
 
-    source_depths = np.array([
-        2000,
-        2050,
-        2100,
-        2150,
-        2200,
-        2250,
-        2300,
-        2350,
-        2400,
-    ]).astype(float)
-    receiver_ranges = np.array([
-        148e3,
-        149e3,
-        150e3,
-        151e3,
-        152e3,
-        153e3,
-        154e3,
-        155e3,
-    ]).astype(float)
+    source_depths = np.array(
+        [
+            2000,
+            2050,
+            2100,
+            2150,
+            2200,
+            2250,
+            2300,
+            2350,
+            2400,
+        ]
+    ).astype(float)
+    receiver_ranges = np.array(
+        [
+            148e3,
+            149e3,
+            150e3,
+            151e3,
+            152e3,
+            153e3,
+            154e3,
+            155e3,
+        ]
+    ).astype(float)
 
     ssource_depths, rreceiver_ranges = np.meshgrid(source_depths, receiver_ranges)
     ssource_depths = ssource_depths.flatten()
@@ -398,7 +411,7 @@ def source_geometry_sweep():
             )
         )
 
-    with open(data_dir / "dataproducts" / "ray_geo_sweep.pkl", "wb") as f:
+    with (data_dir / "dataproducts" / "ray_geo_sweep.pkl").open("wb") as f:
         pickle.dump(
             {
                 "source_depths": ssource_depths,
@@ -427,7 +440,7 @@ def serve_panel_apps():
         *[str(f) for f in app_files],
         "--show",
     ]
-    subprocess.run(cmd)
+    subprocess.run(cmd, check=False)
 
 
 @check_output_exists(
@@ -461,5 +474,5 @@ def phi_chi_LS_fit():
     m_data, _, _, F_phi_lm, F_phi_ls, F_chi_lm, F_chi_ls = tools.estimate_F_phi_chi()
     results = tools.fit_F_phi_chis(m_data, F_phi_lm, F_chi_lm, F_phi_ls, F_chi_ls)
 
-    with open(data_dir / "dataproducts" / "phi_chi_LS_fit.pkl", "wb") as f:
+    with (data_dir / "dataproducts" / "phi_chi_LS_fit.pkl").open("wb") as f:
         pickle.dump(results, f)

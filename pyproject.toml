@@ -21,7 +21,11 @@ classifiers = [
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Scientific/Engineering",
   "Typing :: Typed",
 ]
@@ -58,9 +62,7 @@ test = [
 ]
 dev = [
   { include-group = "test" },
-  "ruff",
-  "pre-commit",
-  "nbstripout"
+  "nbstripout",
 ]
 docs = [
   "sphinx>=7.0",
@@ -75,25 +77,17 @@ docs = [
 version.source = "vcs"
 build.hooks.vcs.version-file = "src/n23_fluctuations_ragland/_version.py"
 
-[tool.hatch.envs.default]
-dependency-groups = ["dev"]
 
-[tool.hatch.envs.hatch-test]
-dependency-groups = ["test"]
-env-vars.PYTHONWARNDEFAULTENCODING = "1"
-
-
-[tool.pytest]
+[tool.pytest.ini_options]
 minversion = "9.0"
-addopts = ["-ra", "--showlocals"]
-strict = true
+addopts = ["-ra", "--showlocals", "--import-mode=importlib"]
+strict_markers = true
 filterwarnings = [
   "error",
+  "ignore::pytest.PytestConfigWarning",
 ]
 log_level = "INFO"
-testpaths = [
-  "tests",
-]
+testpaths = ["tests"]
 
 
 [tool.coverage]
@@ -103,59 +97,20 @@ report.exclude_also = [
   'if typing.TYPE_CHECKING:',
 ]
 
-[tool.mypy]
-files = ["src", "tests"]
-python_version = "3.10"
-warn_unused_configs = true
-strict = true
-enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
-warn_unreachable = true
-disallow_untyped_defs = false
-disallow_incomplete_defs = false
-
-[[tool.mypy.overrides]]
-module = "n23_fluctuations_ragland.*"
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-
 
 [tool.ruff]
-line-length = 88
-exclude = ["*.ipynb"]
-
-[tool.ruff.format]
-# Enable preview style for better wrapping
-preview = true
+extend-exclude = ["notebooks", "dev", "panel_apps", "src/archive.py", "*.ipynb"]
 
 [tool.ruff.lint]
 extend-select = [
-  "B",      # flake8-bugbear
-  "I",      # isort
-  "RUF",    # Ruff-specific
-  "UP",     # pyupgrade
+  "B",    # flake8-bugbear
+  "I",    # isort
+  "UP",   # pyupgrade
+  "SIM",  # flake8-simplify
+  "RUF",  # ruff-specific rules
+  "NPY",  # numpy-specific
+  "PD",   # pandas-vet
+  "PT",   # flake8-pytest-style
+  "PTH",  # flake8-use-pathlib
 ]
-
-ignore = [
-  "B007", # loop control variable not used
-  "F841", # local variable assigned but never used
-  "B008", # function call in a loop
-]
-
-[tool.ruff.lint.per-file-ignores]
-"tests/**" = ["T20"]
-"noxfile.py" = ["T20"]
-"notebooks/**" = ["T20", "E402"]
-
-[tool.pylint]
-py-version = "3.10"
-ignore-paths = [".*/_version.py"]
-reports.output-format = "colorized"
-similarities.ignore-imports = "yes"
-messages_control.disable = [
-  "design",
-  "fixme",
-  "line-too-long",
-  "missing-module-docstring",
-  "missing-function-docstring",
-  "wrong-import-position",
-]
+ignore = ["RUF059"]

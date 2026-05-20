@@ -1,6 +1,5 @@
 """Collection of utility functions for the data analysis of NESCAFE 2023 Acoustic Fluctions"""
 
-import os
 import pickle
 import warnings
 
@@ -11,87 +10,12 @@ import xarray as xr
 import xrsignal as xrs
 from matplotlib import pyplot as plt
 from nescafe23 import compute_filtered_fctd_grid, open_receptions, parse_ray_id
+from nescafe23.data import get_data_dir
+
+## Define global variables
+from nescafe23.peaks import PEAK_BOXES_LOWER
 from scipy import io, optimize, signal
 from tqdm import tqdm
-
-# Define global variables
-
-# angle / time bounding boxes for each arrival (chosen by hand)
-PEAK_BBOXS = {
-    "+7": (101, 101.1, -13, -4),
-    "+6": {
-        0: (100.855, 100.885, 7.5, 10),
-        1: (100.85, 100.885, 8, 10),
-        2: (100.85, 100.885, 8, 11),
-        3: (100.84, 100.87, 8, 10.5),
-        4: (100.84, 100.885, 8.5, 11),
-        5: (100.85, 100.88, 7.5, 11),
-        6: (100.84, 100.885, 6, 10),
-        7: (100.82, 100.88, 6, 9.5),
-        8: (100.82, 100.878, 6, 10),
-        9: (100.825, 100.88, 5.5, 9),
-        10: (100.82, 100.88, 4, 9),
-        11: (100.83, 100.885, 4.5, 8),
-        12: (100.83, 100.88, 5.5, 8.5),
-        13: (100.83, 100.87, 6.5, 9),
-        14: (100.82, 100.88, 8, 10.5),
-        15: (100.83, 100.875, 7, 10.5),
-        16: (100.83, 100.88, 8.5, 11),
-        17: (100.83, 100.89, 8, 10.5),
-        18: (100.84, 100.88, 8, 10.5),
-        19: (100.83, 100.89, 8, 11),
-        20: (100.84, 100.89, 8, 10.5),
-        21: (100.84, 100.89, 6, 10.5),
-        22: (100.84, 100.87, 6, 9),
-    },
-    "-7": {
-        0: (100.89, 100.93, 5.5, 8.5),
-        1: (100.89, 100.93, 6.5, 8.5),
-        2: (100.89, 100.93, 7, 10),
-        3: (100.88, 100.91, 7, 9.5),
-        4: (100.89, 100.93, 6.5, 10),
-        5: (100.89, 100.93, 5.5, 10),
-        6: (100.89, 100.94, 6.5, 9),
-        7: (100.88, 100.92, 5, 8.5),
-        8: (100.89, 100.94, 4.5, 9),
-        9: (100.89, 100.925, 4, 7),
-        10: (100.88, 100.94, 2, 8),
-        11: (100.89, 100.94, 3, 7),
-        12: (100.88, 100.93, 4, 7),
-        13: (100.89, 100.93, 4, 7),
-        14: (100.86, 100.93, 6, 8),
-        15: (100.88, 100.92, 7, 9.5),
-        16: (100.89, 100.94, 7, 9.5),
-        17: (100.88, 100.95, 6, 9),
-        18: (100.9, 100.94, 6.5, 9),
-        19: (100.9, 100.94, 5, 8.5),
-        20: (100.89, 100.94, 6, 8),
-        21: (100.89, 100.94, 5, 10),
-        22: (100.87, 100.91, 4.5, 9),
-    },
-    "-6": (100.65, 100.8, -16, -8),
-    "-5b": (100.4, 100.6, 7, 18),
-    "-6b": (100.8, 100.975, -22, -14),
-    "+6b": (101.2, 101.4, 12, 20),
-    "+7b": (101.6, 101.75, -23, -13),
-    "-7b": (101.95, 102.1, 13, 21),
-    "-8b": (102.35, 102.55, -22, -15),
-    "+8b": (102.75, 103, 14, 22),
-    "+9b": (103.25, 103.4, -26, -16),
-    "-9b": (103.70, 103.85, 14, 26),
-    "-10b": (104.2, 104.4, -27, -15),
-    "+10b": (104.7, 104.9, 16, 26),
-    "+11b": (105.2, 105.4, -27, -17),
-    "-11b": (105.8, 106, 18, 27),
-    "-12b": (106.4, 106.6, -28, -20),
-    "+12b": (106.9, 107.2, 20, 28),
-    "+13b": (107.6, 107.8, -30, -21),
-    "-13b": (108.3, 108.4, 22, 30),
-    "-14b": (108.9, 109.1, -33, -24),
-    "+14b": (109.5, 109.85, 22, 30),
-    "+15b": (110.3, 110.5, -34, -26),
-    "-15b": (110, 111.4, 20, 30),
-}
 
 # dictionary containing tuples for matching forward and backward eigenrays. These pairings are hand-picked
 # notebook for handing picking: `notebooks/auxiliary/Ray_forward_backward_matching.ipynb`
@@ -167,10 +91,12 @@ def get_fctd(fn, filt=True, z_smooth=100, r_smooth=10e3, r_shift=0):
     )
 
     # interpolate to Δr=500, Δz = 1
-    fctd_grid = fctd_pilot.interp({
-        "range": np.arange(0, fctd.range[-1], 500),
-        "depth": np.arange(0, 6000),
-    })
+    fctd_grid = fctd_pilot.interp(
+        {
+            "range": np.arange(0, fctd.range[-1], 500),
+            "depth": np.arange(0, 6000),
+        }
+    )
 
     if filt:
         bz, az = signal.butter(4, 1 / z_smooth, fs=1)
@@ -183,9 +109,9 @@ def get_fctd(fn, filt=True, z_smooth=100, r_smooth=10e3, r_shift=0):
         fctd_smooth = fctd_grid
 
     fctd_slice = fctd_smooth.sel({"range": slice(0, 151000)})
-    fctd_flip = fctd_slice.assign_coords({
-        "range": np.flip(fctd_slice.range.values)
-    }).sortby("range")
+    fctd_flip = fctd_slice.assign_coords(
+        {"range": np.flip(fctd_slice.range.values)}
+    ).sortby("range")
 
     return fctd_flip
 
@@ -202,16 +128,16 @@ def ULA_conventional_beamform(da, thetas, c0=1500):
     """
 
     zs = da.depth.values
-    nzs = len(zs)
+    len(zs)
     z0 = np.mean(zs)
 
     # FFT stuff
     dt = float(da.time[1] - da.time[0])
     nt = len(da.time)
-    dw = 2 * np.pi / (nt * dt)
+    2 * np.pi / (nt * dt)
 
     # Nyquist
-    wN = 2 * np.pi / (2 * dt)
+    2 * np.pi / (2 * dt)
 
     # create frequency vector
     f = scipy.fft.fftfreq(nt, dt)
@@ -253,16 +179,16 @@ def ULA_conventional_beamform_nostack(da, thetas, c0=1500):
     """
 
     zs = da.depth.values
-    nzs = len(zs)
+    len(zs)
     z0 = np.mean(zs)
 
     # FFT stuff
     dt = float(da.time[1] - da.time[0])
     nt = len(da.time)
-    dw = 2 * np.pi / (nt * dt)
+    2 * np.pi / (nt * dt)
 
     # Nyquist
-    wN = 2 * np.pi / (2 * dt)
+    2 * np.pi / (2 * dt)
 
     # create frequency vector
     f = scipy.fft.fftfreq(nt, dt)
@@ -291,72 +217,10 @@ def ULA_conventional_beamform_nostack(da, thetas, c0=1500):
     return dmod_bf, delts
 
 
-def get_peak_location(dss, Tx_idxs=np.arange(23)):
-    """
-    get peak location - using hand derived bounding box (`PEAK_BBOXS`), get time / angle index using peak envelope
-
-    Parameters
-    ----------
-    dss : list
-        list of receptions. created with {mod}`tools.open_receptions`,
-
-    Returns
-    -------
-    arrival_times : dict
-    arrival_angles : dict
-    arrival_snr : dict
-    """
-
-    arrival_times = {}
-    arrival_angles = {}
-    arrival_snr = {}
-
-    for ray_id in PEAK_BBOXS:
-        arrival_times[ray_id] = np.ones(23) * np.nan
-        arrival_angles[ray_id] = np.ones(23) * np.nan
-        arrival_snr[ray_id] = np.ones(23) * np.nan
-
-    for Tx_num in tqdm(Tx_idxs, desc="Tx num"):
-        thetas = np.linspace(-35, 35, 200)
-        lower_Rx = (
-            dss[Tx_num]
-            .swap_dims({"hydrophone": "nominal_depth"})
-            .rename({"nominal_depth": "depth"})[32:]
-        )
-
-        bf_unstacked, _ = ULA_conventional_beamform_nostack(lower_Rx, thetas)
-        bf = bf_unstacked.sum("depth")
-
-        bf_noise = 20 * np.log10(np.abs(bf.sel({"time": slice(90, 95)}).std("time")))
-
-        for ray_id in PEAK_BBOXS:
-            if isinstance(PEAK_BBOXS[ray_id], tuple):
-                t1, t2, th1, th2 = PEAK_BBOXS[ray_id]
-            elif isinstance(PEAK_BBOXS[ray_id], dict):
-                t1, t2, th1, th2 = PEAK_BBOXS[ray_id][Tx_num]
-            else:
-                raise ValueError("PEAK_BBOXS entry must be tuple or dict")
-
-            ## Get argmax values
-            env_slice = 20 * np.log10(
-                np.abs(bf.sel({"time": slice(t1, t2), "angle": slice(th1, th2)}))
-            )
-            flat_idx = env_slice.argmax().item()
-            tmax_idx, thmax_idx = np.unravel_index(flat_idx, env_slice.shape)
-            tmax = env_slice.time[tmax_idx].values
-            thmax = env_slice.angle[thmax_idx].values
-
-            arrival_times[ray_id][Tx_num] = tmax
-            arrival_angles[ray_id][Tx_num] = thmax
-            arrival_snr[ray_id][Tx_num] = env_slice.max() - bf_noise[thmax_idx]
-
-    return arrival_times, arrival_angles, arrival_snr
-
-
 def get_wavefront_values(dss, arrival_times, arrival_angles):
     wavefront_amplitudes = {}
 
-    for ray_id in PEAK_BBOXS:
+    for ray_id in PEAK_BOXES_LOWER:
         wavefront_amplitudes[ray_id] = np.ones((23, 28), dtype="complex") * np.nan
 
     for Tx_num in tqdm(range(len(dss)), desc="Tx num"):
@@ -369,12 +233,12 @@ def get_wavefront_values(dss, arrival_times, arrival_angles):
 
         bf_unstacked, _ = ULA_conventional_beamform_nostack(lower_Rx, thetas)
 
-        for ray_id in PEAK_BBOXS:
+        for ray_id in PEAK_BOXES_LOWER:
             bf_single_peak = (
                 bf_unstacked.sel({"angle": arrival_angles[ray_id][Tx_num]})
-                .assign_coords({
-                    "time": bf_unstacked.time.values - arrival_times[ray_id][Tx_num]
-                })
+                .assign_coords(
+                    {"time": bf_unstacked.time.values - arrival_times[ray_id][Tx_num]}
+                )
                 .sel({"time": slice(-0.15, 0.15)})
             )
 
@@ -787,9 +651,9 @@ def compute_n23_ray_variables(
     # shift front location
     front_location = 35e3
 
-    envi_field = envi_field.assign_coords({
-        "range": (envi_field.range.values + front_location)
-    })
+    envi_field = envi_field.assign_coords(
+        {"range": (envi_field.range.values + front_location)}
+    )
 
     c = envi_field["c"]
     dcdz_p = envi_field["dcdz_p"]
@@ -810,10 +674,10 @@ def compute_n23_ray_variables(
 
     envi = pr.OceanEnvironment2D(sound_speed=c, bathymetry=bathy)
 
-    fn = f"{os.environ['NESCAFE23_DATADIR']}dataproducts/ray_run_forward_back.pkl"
+    fn = get_data_dir() / "dataproducts" / "ray_run_forward_back.pkl"
 
     if ray_run is None:
-        with open(fn, "rb") as f:
+        with fn.open("rb") as f:
             ray_run = pickle.load(f)
 
     eigs = ray_run["eigs"]
@@ -830,12 +694,9 @@ def compute_n23_ray_variables(
     if ray_ids is None:
         ray_ids = list(EIG_INDEXS.keys())
 
-    if len(ray_ids) == 0:
-        tqdm_disable = False
-    else:
-        tqdm_disable = True
+    tqdm_disable = len(ray_ids) != 0
 
-    for k, ray_id in tqdm(enumerate(ray_ids), disable=tqdm_disable):
+    for _k, ray_id in tqdm(enumerate(ray_ids), disable=tqdm_disable):
         for n in range(len(EIG_INDEXS[ray_id])):
             if n == 0:
                 rvs[ray_id] = []
@@ -1588,10 +1449,12 @@ def compute_mean_pulse():
             np.abs(
                 ds.swap_dims({"hydrophone": "actual_depth"})
                 .rename({"actual_depth": "depth"})[32:]
-                .interp({
-                    "depth": np.linspace(800, 1400, 50),
-                    "time": dss[0].time.values,
-                })
+                .interp(
+                    {
+                        "depth": np.linspace(800, 1400, 50),
+                        "time": dss[0].time.values,
+                    }
+                )
                 .drop_vars(["nominal_depth"])
             )
         )
@@ -1600,10 +1463,12 @@ def compute_mean_pulse():
             np.abs(
                 ds.swap_dims({"hydrophone": "actual_depth"})
                 .rename({"actual_depth": "depth"})[:32]
-                .interp({
-                    "depth": np.linspace(100, 600, 50),
-                    "time": dss[0].time.values,
-                })
+                .interp(
+                    {
+                        "depth": np.linspace(100, 600, 50),
+                        "time": dss[0].time.values,
+                    }
+                )
                 .drop_vars(["nominal_depth"])
             )
         )
@@ -1653,9 +1518,9 @@ def estimate_F_phi_chi():
         dictionary containing arrays of log-standard deviation of log-amplitude power spectral density, $F_\\chi$ [rad m]
     """
 
-    fn = f"{os.environ['NESCAFE23_DATADIR']}dataproducts/wavefront_values.pkl"
+    fn = get_data_dir() / "dataproducts" / "wavefront_values.pkl"
 
-    with open(fn, "rb") as f:
+    with fn.open("rb") as f:
         wavefront_values = pickle.load(f)
 
     ray_ids = ["+7", "-7", "-6", "+6"]
