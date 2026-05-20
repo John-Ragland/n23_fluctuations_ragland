@@ -4,7 +4,6 @@ from pathlib import Path
 
 import fsspec
 import matplotlib.pyplot as plt
-import nescafe23 as n23
 import numpy as np
 import pygenray as pr
 import questionary
