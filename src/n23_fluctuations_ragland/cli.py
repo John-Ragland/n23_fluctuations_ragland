@@ -4,6 +4,7 @@ from pathlib import Path
 
 import fsspec
 import matplotlib.pyplot as plt
+import nescafe23 as n23
 import numpy as np
 import pygenray as pr
 import questionary
@@ -149,7 +150,7 @@ def compute_arrival_time_offset():
 
     dss = []
     for fn in fns:
-        dss.append(tools.convert_to_xarray(fn))
+        dss.append(n23.convert_to_xarray(fn))
 
     depth_grid_up = np.linspace(125, 540, 50)
     depth_grid_down = np.linspace(885, 1315, 50)
@@ -225,9 +226,15 @@ def compute_arrival_time_offset():
     dT_avg = (dT_t_upper + dT_t_lower) / 2
 
     plt.rcParams.update({"font.size": 8})
+    plt.rcParams.update({"text.usetex": True})
+
     fig = plt.figure(figsize=(3.37, 2))
-    plt.plot(np.arange(1, 24), dT_t_upper, label="upper array", c="C0", lw=1)
-    plt.plot(np.arange(1, 24), dT_t_lower, label="lower array", c="C1", lw=1)
+    plt.plot(
+        np.arange(1, 24), dT_t_upper, label="upper array", c="k", linestyle="--", lw=1
+    )
+    plt.plot(
+        np.arange(1, 24), dT_t_lower, label="lower array", c="k", linestyle="-.", lw=1
+    )
     plt.plot(np.arange(1, 24), dT_avg, c="k", lw=1, label="average")
     plt.ylabel("$\\Delta \\tau$ [s]")
     plt.legend()
