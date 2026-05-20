@@ -197,3 +197,6 @@ src/nescafe23_fluctuations/source_localization.py
 # If you are interested in the specifics of this code, please feel free to reach out.
 
 notebooks/publication_figures/presentation_figures
+notebooks/presentation_figures/animations/receptions_zoomed_in
+notebooks/presentation_figures/animations/receptions_zoomed_out
+*.gif
