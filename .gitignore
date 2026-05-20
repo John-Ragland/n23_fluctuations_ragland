@@ -196,9 +196,11 @@ src/nescafe23_fluctuations/source_localization.py
 # This file is omitted because the paper explaining these methods in the process of being published.
 # If you are interested in the specifics of this code, please feel free to reach out.
 
+notebooks/publication_figures/presentation_figures
+notebooks/presentation_figures/animations/receptions_zoomed_in
+notebooks/presentation_figures/animations/receptions_zoomed_out
 notebooks/publication_figures/presentation_figures/*
 
 uv.lock
 
-*.png
 *.gif

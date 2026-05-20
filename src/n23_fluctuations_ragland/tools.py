@@ -1165,13 +1165,13 @@ def compute_lambda_phi(
     return Lamda, Phi2
 
 
-def compute_phase_structure_function(
+def compute_phase_structure_integrand(
     rv: dict,
     deltaz_r: np.array,
     fc: float = 250,
 ):
     r"""
-    Given the ray variables, calculate the phase structure function as a function of vertical seperation $\delta z_r$.
+    Given the ray variables, calculate the phase structure function integrand as a function of vertical seperation $\delta z_r$ and range.
 
     Parameters
     ----------
@@ -1184,8 +1184,8 @@ def compute_phase_structure_function(
 
     Returns
     -------
-    D_dzr : np.array
-        array of phase structure function values at each vertical separation in deltaz_r
+    integrand : np.array
+        array of phase structure function integrand values at each vertical separation in deltaz_r and range value
     """
 
     omegac = 2 * np.pi * fc
@@ -1216,9 +1216,36 @@ def compute_phase_structure_function(
     # set any nan values to zero
     integrand = np.where(np.isfinite(integrand), integrand, 0)
 
+    return integrand
+
+
+def compute_phase_structure_function(
+    rv: dict,
+    deltaz_r: np.array,
+    fc: float = 250,
+):
+    r"""
+    Given the ray variables, calculate the phase structure function as a function of vertical seperation $\delta z_r$.
+
+    Parameters
+    ----------
+    rv : dict
+        ray variables dictionary, computed with `compute_ray_path_variables`
+    deltaz_r : np.array
+        array of vertical separations [m] at which to compute phase structure function
+    fc : float
+        acoustic center frequency [1/s]
+
+    Returns
+    -------
+    D_dzr : np.array
+        array of phase structure function values at each vertical separation in deltaz_r
+    """
+
+    integrand = compute_phase_structure_integrand(rv, deltaz_r, fc)
     D_dzr = scipy.integrate.simpson(integrand, axis=0)
 
-    return D_dzr
+    return D_dzr, integrand
 
 
 def estimate_mutual_coherence(X, T):

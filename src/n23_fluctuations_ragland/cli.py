@@ -231,9 +231,15 @@ def compute_arrival_time_offset():
     dT_avg = (dT_t_upper + dT_t_lower) / 2
 
     plt.rcParams.update({"font.size": 8})
+    plt.rcParams.update({"text.usetex": True})
+
     fig = plt.figure(figsize=(3.37, 2))
-    plt.plot(np.arange(1, 24), dT_t_upper, label="upper array", c="C0", lw=1)
-    plt.plot(np.arange(1, 24), dT_t_lower, label="lower array", c="C1", lw=1)
+    plt.plot(
+        np.arange(1, 24), dT_t_upper, label="upper array", c="k", linestyle="--", lw=1
+    )
+    plt.plot(
+        np.arange(1, 24), dT_t_lower, label="lower array", c="k", linestyle="-.", lw=1
+    )
     plt.plot(np.arange(1, 24), dT_avg, c="k", lw=1, label="average")
     plt.ylabel("$\\Delta \\tau$ [s]")
     plt.legend()
