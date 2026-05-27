@@ -4,6 +4,7 @@ from pathlib import Path
 
 import fsspec
 import matplotlib.pyplot as plt
+import nescafe23 as n23
 import numpy as np
 import pygenray as pr
 import questionary
@@ -272,8 +273,8 @@ def estimate_peak_locations():
     """
     data_dir = get_data_dir()
     dss = tools.open_receptions()
-    times, angles, snrs, upper_times, upper_angles, upper_snrs = (
-        tools.get_peak_location(dss)
+    times, angles, snrs, upper_times, upper_angles, upper_snrs = n23.get_peak_location(
+        dss
     )
     peak_locations = {"times": times, "angles": angles, "snrs": snrs}
 

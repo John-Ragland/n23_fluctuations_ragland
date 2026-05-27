@@ -3,6 +3,7 @@
 import pickle
 import warnings
 
+import nescafe23 as n23
 import numpy as np
 import pygenray as pr
 import scipy
@@ -13,7 +14,7 @@ from nescafe23 import compute_filtered_fctd_grid, open_receptions, parse_ray_id
 from nescafe23.data import get_data_dir
 
 ## Define global variables
-from nescafe23.peaks import PEAK_BOXES_LOWER
+from nescafe23.processing import PEAK_BOXES_LOWER
 from scipy import io, optimize, signal
 from tqdm import tqdm
 
@@ -116,107 +117,6 @@ def get_fctd(fn, filt=True, z_smooth=100, r_smooth=10e3, r_shift=0):
     return fctd_flip
 
 
-def ULA_conventional_beamform(da, thetas, c0=1500):
-    """
-
-    Parameters
-    ----------
-    da : xr.DataArray
-        signal to beamform. should have dimensions ['depth', 'time']
-    thetas : np.array
-        array of angles (in degrees) to beamform
-    """
-
-    zs = da.depth.values
-    len(zs)
-    z0 = np.mean(zs)
-
-    # FFT stuff
-    dt = float(da.time[1] - da.time[0])
-    nt = len(da.time)
-    2 * np.pi / (nt * dt)
-
-    # Nyquist
-    2 * np.pi / (2 * dt)
-
-    # create frequency vector
-    f = scipy.fft.fftfreq(nt, dt)
-    ws = 2 * np.pi * f
-
-    w = 2 * np.pi * 250
-
-    delts = -(zs - z0)[:, None] * np.sin(np.radians(thetas[None, :])) / (c0)
-
-    da = da.transpose("depth", "time")
-    dmodf = scipy.fft.fft(da.values, axis=1)
-    dmodf_ps = dmodf[:, :, None] * np.exp(
-        1j * (ws[None, :, None] + w) * delts[:, None, :]
-    )
-
-    dmod_ps_t = scipy.fft.ifft(dmodf_ps, axis=1)
-    dmod_bf_np = np.sum(dmod_ps_t, axis=0)
-    dmod_bf = xr.DataArray(
-        dmod_bf_np,
-        dims=["time", "angle"],
-        coords=({"time": da.time.values, "angle": thetas}),
-    )
-
-    # flip angles so that positive is down (to match ray code)
-    # dmod_bf = dmod_bf.assign_coords({'angle':np.flip(dmod_bf.angle.values)}).sortby('angle')
-
-    return dmod_bf
-
-
-def ULA_conventional_beamform_nostack(da, thetas, c0=1500):
-    """
-
-    Parameters
-    ----------
-    da : xr.DataArray
-        signal to beamform. should have dimensions ['depth', 'time']
-    thetas : np.array
-        array of angles (in degrees) to beamform
-    """
-
-    zs = da.depth.values
-    len(zs)
-    z0 = np.mean(zs)
-
-    # FFT stuff
-    dt = float(da.time[1] - da.time[0])
-    nt = len(da.time)
-    2 * np.pi / (nt * dt)
-
-    # Nyquist
-    2 * np.pi / (2 * dt)
-
-    # create frequency vector
-    f = scipy.fft.fftfreq(nt, dt)
-    ws = 2 * np.pi * f
-
-    w = 2 * np.pi * 250
-
-    delts = -(zs - z0)[:, None] * np.sin(np.radians(thetas[None, :])) / (c0)
-
-    da = da.transpose("depth", "time")
-    dmodf = scipy.fft.fft(da.values, axis=1)
-    dmodf_ps = dmodf[:, :, None] * np.exp(
-        1j * (ws[None, :, None] + w) * delts[:, None, :]
-    )
-
-    dmod_ps_t = scipy.fft.ifft(dmodf_ps, axis=1)
-    dmod_bf = xr.DataArray(
-        dmod_ps_t,
-        dims=["depth", "time", "angle"],
-        coords=({"depth": da.depth.values, "time": da.time.values, "angle": thetas}),
-    )
-
-    # flip angles so that positive is down (to match ray code)
-    # dmod_bf = dmod_bf.assign_coords({'angle':np.flip(dmod_bf.angle.values)}).sortby('angle')
-
-    return dmod_bf, delts
-
-
 def get_wavefront_values(dss, arrival_times, arrival_angles):
     wavefront_amplitudes = {}
 
@@ -231,7 +131,7 @@ def get_wavefront_values(dss, arrival_times, arrival_angles):
             .rename({"nominal_depth": "depth"})[32:]
         )
 
-        bf_unstacked, _ = ULA_conventional_beamform_nostack(lower_Rx, thetas)
+        bf_unstacked, _ = n23.ULA_conventional_beamform_nostack(lower_Rx, thetas)
 
         for ray_id in PEAK_BOXES_LOWER:
             bf_single_peak = (
