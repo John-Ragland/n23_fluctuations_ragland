@@ -204,3 +204,5 @@ notebooks/publication_figures/presentation_figures/*
 uv.lock
 
 *.gif
+
+*.mat

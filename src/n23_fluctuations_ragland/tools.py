@@ -1191,12 +1191,14 @@ def estimate_mutual_coherence(X, T):
     # remove negative lag and normalize
     MC = MC_full.real[N:] / MC_full.real[N]
 
+    MC_noise_ratio = MC_full.real[N - 1] / MC_full.real[N]
+
     t = np.arange(T, N * T - np.finfo(float).eps, T)
 
     # variance of estimate
     MC_var = (1 / (M * denom))[N:]
 
-    return t, MC, MC_var
+    return t, MC, MC_var, MC_noise_ratio
 
 
 def run_rays(
