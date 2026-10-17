@@ -1,0 +1,47 @@
+# Publication figures config for n23_fluctuations_ragland.
+#
+# Generate the figures with `n23_fluctuation_analysis` -> "generate publication figures".
+# The figures only read cached data products under $NESCAFE23_DATADIR/dataproducts, so run
+# the processing pipeline ("run all processing") first.
+#
+# An unknown key is an error.
+
+# Where figures are written. A relative path is relative to this file.
+output_dir: figures
+
+# Figures to build, in manuscript order. Remove entries to build a subset.
+which:
+  - Map
+  - CTD_FCTD
+  - common_arrival_time_shift_estimation
+  - 2D_slice
+  - Acoustic_Receptions
+  - phase_structure_integrand
+  - F_phi_chi_ducted
+  - Ducted_Intensity_Distribution
+  - Ducted_VC
+
+# File formats (pdf, png, svg). null = each figure's format from its notebook
+# (Map -> png, everything else -> pdf).
+formats: null
+
+# Resolution for rasterized content. null = each figure's dpi from its notebook.
+dpi: null
+
+# Render text with LaTeX, as in the notebooks. Set false on a machine without LaTeX.
+# (Map never uses LaTeX.)
+usetex: true
+
+# Seed for the random vertical jitter of the scatter in Ducted_Intensity_Distribution.
+seed: 0
+
+map:
+  # TrueType font for the map. null -> $NESCAFE23_DATADIR/fonts/RedHatDisplay-Medium.ttf
+  font: null
+  # GEBCO bathymetry. null -> $NESCAFE23_DATADIR/environment_data/map_bathy.nc
+  bathymetry: null
+  # CMEMS daily absolute dynamic topography. null ->
+  # $NESCAFE23_DATADIR/environment_data/cmems_obs-sl_glo_phy-ssh_my_allsat-l4-duacs-0.125deg_P1D_1773078040918.nc
+  ssh: null
+  # Dates of the 0.25 m SSH contours: [solid (during NESCAFE23), dashed (during the FCTD survey)]
+  ssh_dates: ["2023-04-30", "2023-05-30"]

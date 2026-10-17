@@ -9,7 +9,7 @@ from __future__ import annotations
 
 def test_cli_imports():
     """All CLI functions can be imported without error."""
-    import n23_fluctuations_ragland.cli as cli
+    from n23_fluctuations_ragland import cli
 
     for name in [
         "compute_arrival_time_offset",
@@ -20,6 +20,8 @@ def test_cli_imports():
         "phi_chi_LS_fit",
         "run_all_processing",
         "source_geometry_sweep",
+        "create_publication_figures_config",
+        "generate_publication_figures",
     ]:
         assert hasattr(cli, name), f"cli.{name} is missing"
 
@@ -132,23 +134,28 @@ def test_run_all_processing_has_all_steps():
         assert func_name in source, f"run_all_processing is missing step: {func_name}"
 
 
-def test_figures_dir_created(tmp_path, monkeypatch):
-    """compute_arrival_time_offset creates the figures directory if missing."""
-    import n23_fluctuations_ragland.cli as cli_mod
-
-    # Point figure_path to a subdir that doesn't exist yet
-    figures_dir = tmp_path / "figures"
-    figures_dir / "common_arrival_time_shift_estimation.pdf"
-
-    # Patch Path(__file__) parent resolution by monkeypatching the figure path
-    # We check mkdir is called via Path.mkdir — instead just verify the logic
-    # by inspecting the source for the mkdir call.
+def test_arrival_time_offset_saves_per_array_offsets():
+    """compute_arrival_time_offset pickles the upper/lower offsets the publication figure plots."""
     import inspect
 
+    import n23_fluctuations_ragland.cli as cli_mod
+
     source = inspect.getsource(cli_mod.compute_arrival_time_offset)
-    assert "mkdir" in source, (
-        "compute_arrival_time_offset must call mkdir to create the figures directory"
-    )
+    for key in ('"dT_t"', '"dT_t_upper"', '"dT_t_lower"'):
+        assert key in source, f"T_t_estimated.pkl must contain {key}"
+
+
+def test_menu_has_publication_figure_options():
+    """The interactive menu offers creating a config and generating the figures."""
+    import inspect
+
+    import n23_fluctuations_ragland.cli as cli_mod
+
+    source = inspect.getsource(cli_mod.main)
+    for choice in ("create publication figures config", "generate publication figures"):
+        assert source.count(f'"{choice}"') == 2, (
+            f"menu is missing or not wired: {choice}"
+        )
 
 
 def test_estimate_F_phi_chi_uses_get_data_dir():

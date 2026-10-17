@@ -3,7 +3,6 @@ from functools import wraps
 from pathlib import Path
 
 import fsspec
-import matplotlib.pyplot as plt
 import nescafe23 as n23
 import numpy as np
 import pygenray as pr
@@ -13,7 +12,7 @@ from nescafe23 import convert_to_xarray
 from nescafe23.data import get_data_dir
 from scipy import signal
 
-from n23_fluctuations_ragland import tools
+from n23_fluctuations_ragland import figures, tools
 
 
 def check_output_exists(*output_paths):
@@ -83,6 +82,8 @@ def main():
             "compute rays",
             "source geometry sweep",
             "ɸ χ GM least squares fit",
+            "create publication figures config",
+            "generate publication figures",
             "exit",
         ],
     ).ask()
@@ -103,6 +104,10 @@ def main():
         source_geometry_sweep()
     elif choice == "ɸ χ GM least squares fit":
         phi_chi_LS_fit()
+    elif choice == "create publication figures config":
+        create_publication_figures_config()
+    elif choice == "generate publication figures":
+        generate_publication_figures()
     elif choice == "exit":
         print("Goodbye!")
         return
@@ -231,34 +236,12 @@ def compute_arrival_time_offset():
 
     dT_avg = (dT_t_upper + dT_t_lower) / 2
 
-    plt.rcParams.update({"font.size": 8})
-    plt.rcParams.update({"text.usetex": True})
-
-    fig = plt.figure(figsize=(3.37, 2))
-    plt.plot(
-        np.arange(1, 24), dT_t_upper, label="upper array", c="k", linestyle="--", lw=1
-    )
-    plt.plot(
-        np.arange(1, 24), dT_t_lower, label="lower array", c="k", linestyle="-.", lw=1
-    )
-    plt.plot(np.arange(1, 24), dT_avg, c="k", lw=1, label="average")
-    plt.ylabel("$\\Delta \\tau$ [s]")
-    plt.legend()
-    plt.xlabel("transmission number")
-    plt.tight_layout()
-
-    figure_path = (
-        Path(__file__).parent.parent.parent
-        / "figures"
-        / "common_arrival_time_shift_estimation.pdf"
-    )
-    figure_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(figure_path, bbox_inches="tight")
-
     with Path(T_t_path).open("wb") as f:
         pickle.dump(
             {
                 "dT_t": dT_avg,
+                "dT_t_upper": dT_t_upper,
+                "dT_t_lower": dT_t_lower,
                 "notes": "tidal arrival time offset estimated with cross-correlations in time of the reception envelope",
             },
             f,
@@ -476,3 +459,56 @@ def phi_chi_LS_fit():
 
     with (data_dir / "dataproducts" / "phi_chi_LS_fit.pkl").open("wb") as f:
         pickle.dump(results, f)
+
+
+def create_publication_figures_config():
+    """Write the publication figures config template to a path chosen by the user."""
+    answer = questionary.path(
+        "Where should the config be written?", default="config.yaml"
+    ).ask()
+    if not answer:
+        return None
+
+    dest = Path(answer).expanduser()
+    if dest.is_dir():
+        dest = dest / "config.yaml"
+    if (
+        dest.exists()
+        and not questionary.confirm(
+            f"{dest} already exists. Overwrite it?", default=False
+        ).ask()
+    ):
+        print(f"Kept existing {dest}.")
+        return dest
+
+    figures.write_config_template(dest, overwrite=True)
+    print(f"Wrote {dest}. Edit it, then run 'generate publication figures'.")
+    return dest
+
+
+def generate_publication_figures():
+    """Generate the publication figures described by a config file."""
+    answer = questionary.path(
+        "Publication figures config:", default="config.yaml"
+    ).ask()
+    if not answer:
+        return None
+
+    try:
+        cfg = figures.load_config(answer)
+    except (figures.ConfigError, FileNotFoundError) as e:
+        print(f"Configuration error: {e}")
+        return None
+
+    print(f"Writing figures to {cfg.output_dir}")
+    build = figures.generate_publication_figures(
+        cfg, progress=lambda name: print(f"  building {name} ...")
+    )
+
+    for path in build.written:
+        print(f"✓ wrote {path}")
+    for name, tb in build.failed.items():
+        print(f"\n✗ {name} failed:\n{tb}")
+    if build.failed:
+        print(f"{len(build.failed)} of {len(cfg.which)} figure(s) failed.")
+    return build

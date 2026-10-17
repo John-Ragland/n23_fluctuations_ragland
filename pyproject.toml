@@ -38,11 +38,15 @@ dependencies = [
   "seaborn",
   "geopy",
   "panel",
+  "pyyaml",
+  "cartopy",
+  "cmps",
 ]
 
 [tool.uv.sources]
 nescafe23 = { workspace = true }
 pygenray = { git = "https://github.com/John-Ragland/pygenray", branch = "main" }
+cmps = { git = "https://github.com/John-Ragland/cmps", branch = "main" }
 
 [project.scripts]
 n23_fluctuation_analysis = "n23_fluctuations_ragland.cli:main"

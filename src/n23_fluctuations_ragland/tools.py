@@ -309,8 +309,6 @@ def compute_ray_path_variables(
     ## Fractional sound speed variance
     mu2 = zeta0**2 * (N0 / Nray) * (dcdz_ray) ** 2 / Cray**2
 
-    jstar = 3
-
     # maximum number of internal wave modes along ray path
     J_max = round(float((N0B_ray.max() ** 2) / (6 * np.pi * zeta0**2 * N0**2 * jstar)))
 
@@ -876,7 +874,7 @@ def plot_ray_variables(
                 * omegac**2
                 * rv["mu2"]
                 * rv["L_p"]
-                / (rv["Cray"] ** 2 + rv["mean_jn1"])
+                / (rv["Cray"] ** 2 * rv["mean_jn1"])
             ).values
             integrand = (
                 integrand1[:, None]
@@ -1105,7 +1103,7 @@ def compute_phase_structure_integrand(
     summand = np.where(np.isfinite(summand), summand, 0)
 
     integrand1 = (
-        2 * omegac**2 * rv["mu2"] * rv["L_p"] / (rv["Cray"] ** 2 + rv["mean_jn1"])
+        2 * omegac**2 * rv["mu2"] * rv["L_p"] / (rv["Cray"] ** 2 * rv["mean_jn1"])
     ).values
     integrand = (
         integrand1[:, None]
@@ -1148,7 +1146,165 @@ def compute_phase_structure_function(
     return D_dzr, integrand
 
 
-def estimate_mutual_coherence(X, T):
+def compute_brack_sigma2(
+    rv: dict,
+    f: float = 9.216181213401561e-05,  # [rad/s]
+):
+    r"""
+    Given the ray variables, compute the spectrally averaged squared internal-wave frequency $\{\sigma^2\}$
+    along the ray, under the perpendicular wavenumber constraint (Colosi 2016, Appendix C, Eqs. C.1 and C.2).
+
+    Near ray turning points $\sigma_L \to f$ and the closed form suffers catastrophic cancellation, so the
+    axial-ray limit $\{\sigma^2\} = 2 N^2 f^2 \ln(N/f) / (N^2 - f^2)$ (Colosi 2016, §7.4.4) is used there.
+
+    Parameters
+    ----------
+    rv : dict
+        ray variables dictionary, computed with `compute_ray_path_variables`
+    f : float
+        Coriolis parameter [rad/s]
+
+    Returns
+    -------
+    brack_sigma2 : xr.DataArray
+        $\{\sigma^2\}$ [rad$^2$/s$^2$] along the ray path. Set to zero where undefined (e.g. $N = 0$, or
+        $\sigma_L \geq N$ so that no internal waves satisfy the resonance condition)
+    """
+
+    N = rv["Nray"]
+    sigma_L2 = f**2 + N**2 * np.tan(rv["Theta_ray"]) ** 2
+    sigma_L = np.sqrt(sigma_L2)
+
+    # normalization, Eq. C.2 (same quantity as W in `compute_F_phi_chi`)
+    M_sigma_inv = 0.5 * (
+        np.sqrt((1 - (sigma_L2 / N**2)) * (1 - (f**2 / N**2)))
+        + ((sigma_L / f) - (f / sigma_L))
+        * np.log(
+            (np.sqrt(1 - (f**2 / N**2)) + np.sqrt((f**2 / sigma_L2) - (f**2 / N**2)))
+            / (np.sqrt(1 - (f**2 / sigma_L2)))
+        )
+    )
+
+    # Eq. C.1
+    A = np.sqrt(N**2 - sigma_L2) * np.sqrt(N**2 - f**2)
+    brack_sigma2 = (
+        sigma_L2
+        / (2 * M_sigma_inv)
+        * (
+            np.log((2 * N**2 - sigma_L2 - f**2 + 2 * A) / (sigma_L2 - f**2))
+            + (f / sigma_L)
+            * np.log(
+                (N**2 * (sigma_L2 + f**2) - 2 * f**2 * sigma_L2 - 2 * f * sigma_L * A)
+                / (N**2 * (sigma_L2 - f**2))
+            )
+        )
+    )
+
+    # axial-ray limit, where Eq. C.1 is numerically unstable
+    brack_sigma2_axial = 2 * N**2 * f**2 * np.log(N / f) / (N**2 - f**2)
+    brack_sigma2 = brack_sigma2.where(
+        (sigma_L2 - f**2) / f**2 > 1e-4, brack_sigma2_axial
+    )
+
+    # set invalid values to zero
+    brack_sigma2 = brack_sigma2.where(np.isfinite(brack_sigma2), 0)
+    brack_sigma2.name = "$\\{\\sigma^2\\}$"
+    brack_sigma2.attrs["units"] = "rad$^2$/s$^2$"
+
+    return brack_sigma2
+
+
+def compute_vertical_coherence_length(
+    rv: dict,
+    fc: float = 250,
+):
+    r"""
+    Given the ray variables, compute the vertical coherence length $z_0$ (Colosi 2016, Eq. 7.52, with
+    $\{m^2\}$ from Eq. 7.53). $z_0$ is the receiver separation at which the coherence decays to $e^{-1/2}$,
+    from the quadratic (small separation) approximation of the phase structure function.
+
+    Parameters
+    ----------
+    rv : dict
+        ray variables dictionary, computed with `compute_ray_path_variables`
+    fc : float
+        acoustic center frequency [1/s]
+
+    Returns
+    -------
+    z0 : float
+        vertical coherence length [m]
+    integrand : np.array
+        integrand of $z_0^{-2}$ along the ray path
+    """
+
+    wc = 2 * np.pi * fc
+
+    integrand = (
+        wc**2
+        * rv["mu2"].values
+        * rv["L_p"].values
+        / (rv["Cray"].values ** 2)
+        * rv["brack_m2"].values
+        * rv["RT_zeta_1"] ** 2
+        * np.sqrt(rv["drdt"] ** 2 + rv["dzdt"] ** 2)
+    )
+    # set any nan values to zero
+    integrand = np.where(np.isfinite(integrand), integrand, 0)
+
+    z0 = 1 / np.sqrt(scipy.integrate.simpson(integrand, axis=0))
+
+    return z0, integrand
+
+
+def compute_time_coherence_length(
+    rv: dict,
+    fc: float = 250,
+    f: float = 9.216181213401561e-05,  # [rad/s]
+):
+    r"""
+    Given the ray variables, compute the coherence time $t_0$ (Colosi 2016, Eq. 7.55, with $\{\sigma^2\}$
+    from Appendix C, Eq. C.1). $t_0$ is the time separation at which the coherence decays to $e^{-1/2}$,
+    from the quadratic (small separation) approximation of the phase structure function.
+
+    Parameters
+    ----------
+    rv : dict
+        ray variables dictionary, computed with `compute_ray_path_variables`
+    fc : float
+        acoustic center frequency [1/s]
+    f : float
+        Coriolis parameter [rad/s]
+
+    Returns
+    -------
+    t0 : float
+        coherence time [s]
+    integrand : np.array
+        integrand of $t_0^{-2}$ along the ray path
+    """
+
+    wc = 2 * np.pi * fc
+
+    brack_sigma2 = compute_brack_sigma2(rv, f)
+
+    integrand = (
+        wc**2
+        * rv["mu2"].values
+        * rv["L_p"].values
+        / (rv["Cray"].values ** 2)
+        * brack_sigma2.values
+        * np.sqrt(rv["drdt"] ** 2 + rv["dzdt"] ** 2)
+    )
+    # set any nan values to zero
+    integrand = np.where(np.isfinite(integrand), integrand, 0)
+
+    t0 = 1 / np.sqrt(scipy.integrate.simpson(integrand, axis=0))
+
+    return t0, integrand
+
+
+def estimate_mutual_coherence(X, T, omit_zero_lag: bool = True, norm: bool = True):
     r"""
     Given array X of shape (M,N) containing M snapshots of vector $\\in \\mathbb{R}^N$
         where the vector contains equally spaced samples in dimension that mutual coherence is to be estimated.
@@ -1161,7 +1317,11 @@ def estimate_mutual_coherence(X, T):
     X : np.array
         Array of shape (M,N), containing M snapshots of vector $\\in \\mathbb{R}^N$
     T : sample spacing of samples in dim 1of X. Units arbitrary
-
+    omit_zero_lag : bool
+        If True, omit the zero lag from the mutual coherence estimate, normalized to next smallest lag.
+        If False, zero lag is included and normalized by this. Default is True.
+    norm : bool
+        If True, normalize the mutual coherence by the value at the smallest non-zero lag (to remove bias from noise at lag=0). Default is True.
 
     Returns
     -------
@@ -1189,16 +1349,27 @@ def estimate_mutual_coherence(X, T):
     MC_full = np.mean(np.array(Rxxs), axis=0)
 
     # remove negative lag and normalize
-    MC = MC_full.real[N:] / MC_full.real[N]
+    if not omit_zero_lag:
+        if norm:
+            MC = MC_full.real[N - 1 :] / MC_full.real[N - 1]
+        else:
+            MC = MC_full.real[N - 1 :]
+    else:
+        MC = MC_full.real[N:] / MC_full.real[N] if norm else MC_full.real[N:]
 
     MC_noise_ratio = MC_full.real[N - 1] / MC_full.real[N]
 
-    t = np.arange(T, N * T - np.finfo(float).eps, T)
+    if not omit_zero_lag:
+        t = np.arange(0, N * T - np.finfo(float).eps, T)
+        start = N - 1
+    else:
+        t = np.arange(T, N * T - np.finfo(float).eps, T)
+        start = N
 
-    # variance of estimate
-    MC_var = (1 / (M * denom))[N:]
+    # variance of estimate, on the same lags as MC
+    MC_var = (1 / (M * denom))[start:]
 
-    return t, MC, MC_var, MC_noise_ratio
+    return t, MC, MC_var, MC_noise_ratio, denom[start:]
 
 
 def run_rays(

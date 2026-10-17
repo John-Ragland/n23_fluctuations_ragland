@@ -20,7 +20,7 @@ package, GitHub install, used by the panel app).
 ```bash
 uv sync
 uv run pytest                    # test_cli.py, test_package.py — lightweight, avoid heavy computation
-uv run nescafe23-processing       # interactive CLI: runs the processing pipeline steps
+uv run n23_fluctuation_analysis   # interactive CLI: processing pipeline + publication figures
 uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dashboards
 ```
 
@@ -40,6 +40,21 @@ uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dash
   (arrival time offset, peak locations, wavefront values, mean pulse, ray computation, source geometry sweep,
   φ/χ least-squares fit), each step decorated with `check_output_exists` to skip/overwrite cached outputs.
   `run_all_processing()` chains all steps; `serve_panel_apps()` shells out to `panel serve` on `panel_apps/`.
+  Two more menu entries drive the publication figures: "create publication figures config" copies
+  the template to a `config.yaml`, and "generate publication figures" builds from one.
+- **`src/n23_fluctuations_ragland/figures.py`** — the publication figures, one `plot_*` function per
+  figure, registered in `FIGURES` in manuscript order. The keys are the output filenames (`Map`,
+  `CTD_FCTD`, `2D_slice`, …). Bodies are copied from the notebook cells listed in each docstring.
+  Keep them close to the notebook code rather than refactoring. `generate_publication_figures(config)`
+  saves each figure to the config's `output_dir`, which is relative to the config file. A failing
+  figure is recorded and the rest still build. The config is validated against
+  `templates/publication_figures.yaml`, and an unknown key is an error.
+  - `Map` and the ellipses/labels on `Acoustic_Receptions` were hand-annotated in the published
+    versions. They are recreated in code with positions measured off the reference images, so expect
+    them to need nudging if the data or layout changes.
+  - `common_arrival_time_shift_estimation` reads `dT_t_upper`/`dT_t_lower` from `T_t_estimated.pkl`.
+    Only this project's "compute arrival time offset" writes those keys. The base `nescafe23` CLI
+    writes the same file without them.
 - **`src/archive.py`** — dead/archived code, excluded from linting; not maintained.
 - **`panel_apps/source_geometry_sweep.py`** — standalone Panel dashboard visualizing the source-geometry
   grid-search ray-tracing results; not part of the installable package.
@@ -53,9 +68,11 @@ uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dash
 
 ## Non-obvious conventions
 
-- **Pipeline ordering matters**: the `nescafe23-processing` CLI must be run before the `publication_figures`/
-  `presentation_figures` notebooks, which only load cached pickled/NetCDF data products — the notebooks are
-  not self-contained.
+- **Pipeline ordering matters**: the processing steps must be run before `figures.py` or the
+  `publication_figures`/`presentation_figures` notebooks, which only load cached pickled/NetCDF data
+  products. The notebooks are the original figure source and may drift from the current `tools.py`. For example,
+  `compute_phase_structure_function` now returns `(D_dzr, integrand)`, which `Vertical_Coherence.ipynb`
+  predates. `figures.py` is the maintained path.
 - **Caching**: outputs are guarded by `check_output_exists`. Changing `tools.py` logic has *no effect* on
   downstream notebooks unless you pass `force_overwrite=True` or delete the stale pickle under
   `NESCAFE23_DATADIR/dataproducts/`.
