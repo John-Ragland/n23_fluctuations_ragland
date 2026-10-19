@@ -10,6 +10,8 @@ import yaml
 
 mpl.use("Agg")
 
+import matplotlib.pyplot as plt
+
 from n23_fluctuations_ragland import figures
 
 
@@ -106,3 +108,28 @@ def test_only_rejects_an_unknown_figure(tmp_path):
     cfg = figures.PublicationFiguresConfig(output_dir=tmp_path)
     with pytest.raises(figures.ConfigError):
         figures.generate_publication_figures(cfg, only=["nope"])
+
+
+def test_label_panels_letters_and_box_style():
+    fig, axes = plt.subplots(1, 3)
+    figures.label_panels(
+        axes, ["upper right", "upper left", (0.5, 0.5, "center", "top")]
+    )
+    labels = [ax.texts[0] for ax in axes]
+    assert [t.get_text() for t in labels] == ["(a)", "(b)", "(c)"]
+    for t in labels:
+        assert t.get_fontsize() == 7
+        patch = t.get_bbox_patch()
+        assert patch.get_linewidth() == 0.5
+        assert patch.get_edgecolor()[3] == 1
+        assert patch.get_facecolor()[3] == pytest.approx(0.8)
+    plt.close(fig)
+
+
+def test_label_panels_rejects_bad_locations():
+    fig, axes = plt.subplots(1, 2)
+    with pytest.raises(ValueError, match="2 axes"):
+        figures.label_panels(axes, ["upper right"] * 3)
+    with pytest.raises(ValueError, match="unknown panel label location"):
+        figures.label_panels(axes, "top middle")
+    plt.close(fig)

@@ -553,6 +553,69 @@ def _format_date(date: str) -> str:
     return f"{ts:%B} {ts.day}, {ts.year}"
 
 
+PANEL_LABEL_FONTSIZE = 7
+PANEL_LABEL_FACE_ALPHA = 0.8
+
+# corner -> (xy in axes fraction, inset direction, ha, va)
+_PANEL_LABEL_CORNERS = {
+    "upper right": ((1, 1), (-1, -1), "right", "top"),
+    "upper left": ((0, 1), (1, -1), "left", "top"),
+    "lower left": ((0, 0), (1, 1), "left", "bottom"),
+    "lower right": ((1, 0), (-1, 1), "right", "bottom"),
+}
+
+PanelLabelLoc = str | tuple[float, float, str, str]
+
+
+def label_panels(
+    axes: Sequence[Any],
+    locs: PanelLabelLoc | Sequence[PanelLabelLoc] = "upper right",
+    *,
+    inset: float = 3.0,
+) -> None:
+    """Letter each axis ``(a)``, ``(b)``, … in order; ``locs`` is one location or one per axis.
+
+    A location is a corner name from ``_PANEL_LABEL_CORNERS`` (inset by ``inset`` points) or an
+    ``(x, y, ha, va)`` tuple in axes fraction, used where the corner overlaps plotted elements.
+    Pass the axes explicitly rather than ``fig.axes``, which also holds the colorbars.
+    """
+    if isinstance(locs, str) or (
+        isinstance(locs, tuple) and len(locs) == 4 and isinstance(locs[2], str)
+    ):
+        locs = [locs] * len(axes)  # type: ignore[list-item]
+    if len(locs) != len(axes):
+        msg = f"got {len(locs)} label locations for {len(axes)} axes"
+        raise ValueError(msg)
+
+    for k, (ax, loc) in enumerate(zip(axes, locs, strict=True)):
+        if isinstance(loc, str):
+            if loc not in _PANEL_LABEL_CORNERS:
+                msg = f"unknown panel label location {loc!r}; choose from {list(_PANEL_LABEL_CORNERS)}"
+                raise ValueError(msg)
+            xy, (dx, dy), ha, va = _PANEL_LABEL_CORNERS[loc]
+            offset = (inset * dx, inset * dy)
+        else:
+            x, y, ha, va = loc
+            xy, offset = (x, y), (0, 0)
+        ax.annotate(
+            f"({chr(ord('a') + k)})",
+            xy=xy,
+            xycoords="axes fraction",
+            xytext=offset,
+            textcoords="offset points",
+            ha=ha,
+            va=va,
+            fontsize=PANEL_LABEL_FONTSIZE,
+            zorder=1000,
+            bbox={
+                "boxstyle": "square,pad=0.15",
+                "facecolor": (1, 1, 1, PANEL_LABEL_FACE_ALPHA),
+                "edgecolor": "k",
+                "linewidth": 0.5,
+            },
+        )
+
+
 # ---------------------------------------------------------------------------
 # Figures
 # ---------------------------------------------------------------------------
@@ -969,6 +1032,7 @@ def plot_ctd_fctd(cfg: PublicationFiguresConfig) -> Figure:
     plt.legend(loc="lower left")
 
     plt.tight_layout()
+    label_panels([ax_ctd, ax_fctd_temp, ax_fctd_sal], "upper left")
     return fig
 
 
@@ -1098,6 +1162,8 @@ def plot_2d_slice(cfg: PublicationFiguresConfig) -> Figure:
     plt.ylabel("depth [m]")
 
     plt.tight_layout(pad=0)
+    # the receiver-array markers at 153 km sit in the upper right
+    label_panels(axes, "upper left")
     return fig
 
 
@@ -1132,7 +1198,7 @@ def plot_acoustic_receptions(cfg: PublicationFiguresConfig) -> Figure:
 
     fig = plt.figure(figsize=(6.67, 4))
 
-    plt.subplot(2, 1, 1)
+    ax_pulse = plt.subplot(2, 1, 1)
     (20 * np.log10(mean_pulse_lower) - mean_pulse_lower_noise).sel(
         {"depth": slice(950, 1250)}
     ).plot(
@@ -1150,7 +1216,7 @@ def plot_acoustic_receptions(cfg: PublicationFiguresConfig) -> Figure:
     plt.gca().set_xticklabels("")
     plt.title("Acoustic Reception: Mean Pulse", loc="left", pad=-2)
 
-    plt.subplot(2, 1, 2)
+    ax_bf = plt.subplot(2, 1, 2)
 
     (20 * np.log10(np.abs(bf_lower)) - bf_lower_noise).plot(
         x="time",
@@ -1203,6 +1269,8 @@ def plot_acoustic_receptions(cfg: PublicationFiguresConfig) -> Figure:
         )
 
     plt.tight_layout(pad=0.25)
+    # arrivals run along the right edge of both panes
+    label_panels([ax_pulse, ax_bf], "upper left")
     return fig
 
 
@@ -1332,6 +1400,8 @@ def plot_phase_structure_integrand(cfg: PublicationFiguresConfig) -> Figure:
     axes[1].set_xticklabels([])
 
     plt.tight_layout(pad=0)
+    # the xi_1 curves and the integrand spikes reach the upper right
+    label_panels(axes, "upper left")
     return fig
 
 
@@ -1538,6 +1608,8 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
             )
 
     plt.tight_layout()
+    # the Ray ID box takes the upper right
+    label_panels(axes, "upper left")
     return fig
 
 
@@ -1899,6 +1971,7 @@ def plot_ducted_vc(cfg: PublicationFiguresConfig) -> Figure:
     plt.tight_layout(pad=0.5)
 
     fig.subplots_adjust(right=0.9)
+    label_panels(axes)
     return fig
 
 
