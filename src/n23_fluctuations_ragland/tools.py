@@ -1865,12 +1865,16 @@ def compute_mean_pulse():
     )
 
 
-def estimate_F_phi_chi():
+def estimate_F_phi_chi(remove_array_tilt: bool = False):
     r"""
     Estimate observed $F_{\phi}$ and $F_{\chi}$ for the acoustic receptions.
 
     Periodograms are computed for each of the receptions and the periodograms are averaged together in the log domain
 
+    Parameters
+    ----------
+    remove_array_tilt : bool
+        If True, wavefront values with array tilt removed are used.
     Returns
     -------
     m_data : np.array
@@ -1889,7 +1893,10 @@ def estimate_F_phi_chi():
         dictionary containing arrays of log-standard deviation of log-amplitude power spectral density, $F_\\chi$ [rad m]
     """
 
-    fn = get_data_dir() / "dataproducts" / "wavefront_values.pkl"
+    if remove_array_tilt:
+        fn = get_data_dir() / "dataproducts" / "wavefront_values_tilt_removed.pkl"
+    else:
+        fn = get_data_dir() / "dataproducts" / "wavefront_values.pkl"
 
     with fn.open("rb") as f:
         wavefront_values = pickle.load(f)
