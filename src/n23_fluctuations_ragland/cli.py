@@ -82,6 +82,7 @@ def main():
             "compute rays",
             "source geometry sweep",
             "ɸ χ GM least squares fit",
+            "coherence lengths (observed vs. GM)",
             "create publication figures config",
             "generate publication figures",
             "exit",
@@ -104,6 +105,8 @@ def main():
         source_geometry_sweep()
     elif choice == "ɸ χ GM least squares fit":
         phi_chi_LS_fit()
+    elif choice == "coherence lengths (observed vs. GM)":
+        coherence_lengths()
     elif choice == "create publication figures config":
         create_publication_figures_config()
     elif choice == "generate publication figures":
@@ -459,6 +462,34 @@ def phi_chi_LS_fit():
 
     with (data_dir / "dataproducts" / "phi_chi_LS_fit.pkl").open("wb") as f:
         pickle.dump(results, f)
+
+
+def coherence_lengths():
+    """
+    Print a LaTeX table of the observed (Gaussian fit to the mutual coherence) and theoretical (1GM path
+    integral) vertical coherence lengths and coherence times for each ray.
+    """
+    data_dir = get_data_dir()
+
+    wavefront_values_path = data_dir / "dataproducts" / "wavefront_values.pkl"
+    if not wavefront_values_path.exists():
+        raise FileNotFoundError(
+            "Wavefront values not found. Please run 'compute wavefront values' first."
+        )
+
+    with wavefront_values_path.open("rb") as f:
+        wavefront_values = pickle.load(f)
+
+    print("Estimating observed coherence lengths...")
+    observed = tools.estimate_observed_coherence_lengths(wavefront_values)
+    print("Computing theoretical (1GM) coherence lengths...")
+    theory = tools.compute_theoretical_coherence_lengths()
+
+    table = tools.coherence_lengths_latex_table(observed, theory)
+    print("=" * 60)
+    print(table)
+    print("=" * 60)
+    return table
 
 
 def create_publication_figures_config():

@@ -1372,6 +1372,200 @@ def estimate_mutual_coherence(X, T, omit_zero_lag: bool = True, norm: bool = Tru
     return t, MC, MC_var, MC_noise_ratio, denom[start:]
 
 
+def gaussian_coherence_model(delta, A0, L):
+    r"""
+    Gaussian coherence model $A_0 \exp(-\frac{1}{2} (\Delta / L)^2)$. The coherence decays to
+    $A_0 e^{-1/2}$ at $\Delta = L$, the same definition as `compute_vertical_coherence_length` and
+    `compute_time_coherence_length`.
+    """
+    return A0 * np.exp(-0.5 * (delta / L) ** 2)
+
+
+def fit_coherence_length(lags, MC, L0: float):
+    r"""
+    Least squares fit of `gaussian_coherence_model` to an estimated mutual coherence.
+
+    Parameters
+    ----------
+    lags : np.array
+        lags of the mutual coherence estimate
+    MC : np.array
+        mutual coherence estimate at `lags`
+    L0 : float
+        initial guess of the coherence length, in units of `lags`
+
+    Returns
+    -------
+    A0 : float
+        fitted amplitude, NaN if the fit fails
+    L : float
+        fitted coherence length in units of `lags`, NaN if the fit fails
+    """
+    lags = np.asarray(lags, dtype=float)
+    MC = np.asarray(MC, dtype=float)
+    valid = np.isfinite(lags) & np.isfinite(MC)
+
+    try:
+        popt, _ = optimize.curve_fit(
+            gaussian_coherence_model,
+            lags[valid],
+            MC[valid],
+            p0=(1.0, L0),
+            bounds=(0, np.inf),
+        )
+    except (RuntimeError, ValueError, TypeError):
+        return np.nan, np.nan
+
+    return float(popt[0]), float(popt[1])
+
+
+def estimate_observed_coherence_lengths(
+    wavefront_values: dict, dz: float = 9.0, dt: float = 3600.0
+):
+    r"""
+    Estimate the observed vertical coherence length $z_0$ and coherence time $t_0$ for each ray by fitting
+    `gaussian_coherence_model` to the mutual coherence of the wavefront values.
+
+    The depth mutual coherence omits the zero lag (biased by noise). The time mutual coherence keeps the
+    zero lag, using the hydrophones as snapshots and the transmissions as time samples.
+
+    Parameters
+    ----------
+    wavefront_values : dict
+        wavefront values for each ray ID, of shape (transmission, hydrophone), from `get_wavefront_values`
+    dz : float
+        hydrophone spacing [m], default is the 9 m design spacing
+    dt : float
+        time between transmissions [s], default is 1 hour
+
+    Returns
+    -------
+    coherence_lengths : dict
+        for each ray ID, a dict with `z0` [m] and `t0` [s]
+    """
+    coherence_lengths = {}
+    for ray_id, X in wavefront_values.items():
+        dzs, MC_z, _, _, _ = estimate_mutual_coherence(X, dz, omit_zero_lag=True)
+        _, z0 = fit_coherence_length(dzs, MC_z, L0=100.0)
+
+        dts, MC_t, _, _, _ = estimate_mutual_coherence(X.T, dt, omit_zero_lag=False)
+        _, t0 = fit_coherence_length(dts, MC_t, L0=dt)
+
+        coherence_lengths[ray_id] = {"z0": z0, "t0": t0}
+
+    return coherence_lengths
+
+
+def compute_theoretical_coherence_lengths(fc: float = 250, zeta0: float = 7.3):
+    r"""
+    Compute the GM path integral vertical coherence length $z_0$ and coherence time $t_0$ for every ray ID
+    and eigenray pair in `EIG_INDEXS`.
+
+    Parameters
+    ----------
+    fc : float
+        acoustic center frequency [Hz]
+    zeta0 : float
+        reference displacement of GM spectrum [m], Default is 7.3 m (1GM energy level)
+
+    Returns
+    -------
+    coherence_lengths : dict
+        for each ray ID, a list (one entry per eigenray pair) of dicts with `z0` [m] and `t0` [s].
+        Ray IDs whose ray variables could not be computed are omitted.
+    """
+    try:
+        rvs = compute_n23_ray_variables(fc=fc, zeta0=zeta0)
+    except Exception:
+        # one failing ray fails the whole call, so compute them one at a time
+        with (get_data_dir() / "dataproducts" / "ray_run_forward_back.pkl").open(
+            "rb"
+        ) as f:
+            ray_run = pickle.load(f)
+
+        rvs = {}
+        for ray_id in EIG_INDEXS:
+            try:
+                rvs.update(
+                    compute_n23_ray_variables(
+                        fc=fc, zeta0=zeta0, ray_ids=[ray_id], ray_run=ray_run
+                    )
+                )
+            except Exception as e:
+                warnings.warn(
+                    f"could not compute ray variables for {ray_id}: {e}", stacklevel=2
+                )
+
+    coherence_lengths = {}
+    for ray_id, rv_pairs in rvs.items():
+        coherence_lengths[ray_id] = [
+            {
+                "z0": float(compute_vertical_coherence_length(rv, fc)[0]),
+                "t0": float(compute_time_coherence_length(rv, fc)[0]),
+            }
+            for rv in rv_pairs
+        ]
+
+    return coherence_lengths
+
+
+def coherence_lengths_latex_table(observed: dict, theory: dict) -> str:
+    r"""
+    Format observed and theoretical coherence lengths as a LaTeX (booktabs) table.
+
+    Parameters
+    ----------
+    observed : dict
+        output of `estimate_observed_coherence_lengths`
+    theory : dict
+        output of `compute_theoretical_coherence_lengths`
+
+    Returns
+    -------
+    table : str
+        LaTeX table. Coherence times are reported in minutes. Missing values are `--`.
+    """
+
+    def fmt(value, scale=1.0):
+        if value is None or not np.isfinite(value):
+            return "--"
+        return f"{value * scale:.1f}"
+
+    ray_ids = [
+        ray_id for ray_id in EIG_INDEXS if ray_id in observed or ray_id in theory
+    ]
+    ray_ids += [ray_id for ray_id in observed if ray_id not in ray_ids]
+    ray_ids += [ray_id for ray_id in theory if ray_id not in ray_ids]
+
+    rows = []
+    for ray_id in ray_ids:
+        obs = observed.get(ray_id, {})
+        pairs = theory.get(ray_id, [{}])
+        for n, gm in enumerate(pairs):
+            obs_n = obs if n == 0 else {}
+            pair = str(n) if ray_id in theory else "--"
+            rows.append(
+                f"${ray_id}$ & {pair} & {fmt(obs_n.get('z0'))} & {fmt(gm.get('z0'))} & "
+                f"{fmt(obs_n.get('t0'), 1 / 60)} & {fmt(gm.get('t0'), 1 / 60)} \\\\"
+            )
+
+    lines = [
+        r"\begin{table}",
+        r"\centering",
+        r"\begin{tabular}{llrrrr}",
+        r"\toprule",
+        r"Ray ID & pair & $z_0$ obs. [m] & $z_0$ GM [m] & $t_0$ obs. [min] & $t_0$ GM [min] \\",
+        r"\midrule",
+        *rows,
+        r"\bottomrule",
+        r"\end{tabular}",
+        r"\caption{Observed and theoretical (1GM) vertical coherence length $z_0$ and coherence time $t_0$.}",
+        r"\label{tab:coherence_lengths}",
+        r"\end{table}",
+    ]
+    return "\n".join(lines)
+
+
 def run_rays(
     num_rays: int | None = None,
     source_depth: float | None = None,

@@ -22,6 +22,7 @@ def test_cli_imports():
         "source_geometry_sweep",
         "create_publication_figures_config",
         "generate_publication_figures",
+        "coherence_lengths",
     ]:
         assert hasattr(cli, name), f"cli.{name} is missing"
 
@@ -38,6 +39,9 @@ def test_tools_has_required_functions():
         "estimate_F_phi_chi",
         "fit_F_phi_chis",
         "compute_filtered_fctd_grid",
+        "estimate_observed_coherence_lengths",
+        "compute_theoretical_coherence_lengths",
+        "coherence_lengths_latex_table",
     ]
     for name in required:
         assert hasattr(tools, name), f"tools.{name} is missing"
@@ -170,3 +174,36 @@ def test_estimate_F_phi_chi_uses_get_data_dir():
         "os.environ['NESCAFE23_DATADIR'] to avoid missing path separator"
     )
     assert "get_data_dir" in source
+
+
+def test_fit_coherence_length_recovers_gaussian():
+    """The coherence length fit recovers A0 and L, with and without the zero lag."""
+    import numpy as np
+
+    from n23_fluctuations_ragland import tools
+
+    for lags in [np.arange(0, 250, 9.0), np.arange(9, 250, 9.0)]:
+        MC = tools.gaussian_coherence_model(lags, 0.8, 120.0)
+        A0, L = tools.fit_coherence_length(lags, MC, L0=100.0)
+        assert np.isclose(A0, 0.8)
+        assert np.isclose(L, 120.0)
+
+
+def test_coherence_lengths_latex_table():
+    """One row per eigenray pair, missing values as --."""
+    from n23_fluctuations_ragland import tools
+
+    observed = {"-6": {"z0": 100.0, "t0": 3600.0}, "+7": {"z0": 50.0, "t0": 7200.0}}
+    theory = {
+        "-6": [{"z0": 90.0, "t0": 1800.0}, {"z0": 95.0, "t0": 1900.0}],
+        "-8": [{"z0": 80.0, "t0": 1200.0}],
+    }
+    table = tools.coherence_lengths_latex_table(observed, theory)
+
+    assert "\\begin{tabular}" in table
+    rows = [line for line in table.splitlines() if line.startswith("$")]
+    assert len(rows) == 4
+    assert rows[0] == "$-8$ & 0 & -- & 80.0 & -- & 20.0 \\\\"
+    assert rows[1] == "$+7$ & -- & 50.0 & -- & 120.0 & -- \\\\"
+    assert rows[2] == "$-6$ & 0 & 100.0 & 90.0 & 60.0 & 30.0 \\\\"
+    assert rows[3].startswith("$-6$ & 1 & -- & 95.0")
