@@ -117,33 +117,54 @@ def get_fctd(fn, filt=True, z_smooth=100, r_smooth=10e3, r_shift=0):
     return fctd_flip
 
 
-def get_wavefront_values(dss, arrival_times, arrival_angles):
+def get_wavefront_values(dss, arrival_times, arrival_angles, half_window=1.0):
+    """
+    Unstacked beamformer output of the lower array at each ray's arrival time and angle.
+
+    Each ray is beamformed at its own (arbitrary, off-grid) angle over a short window around
+    its arrival, so no angle grid is involved.
+
+    Parameters
+    ----------
+    dss : list
+    arrival_times : dict
+        ray_id → array of arrival times [s] (shape: 23)
+    arrival_angles : dict
+        ray_id → array of arrival angles [deg] (shape: 23). Any real value is allowed.
+    half_window : float
+        half width [s] of the time window beamformed around each arrival. Must comfortably exceed
+        the largest plane-wave delay across the array (~46 ms at 35°) so the FFT wrap-around stays
+        away from the arrival. Default is 1.0.
+
+    Returns
+    -------
+    wavefront_amplitudes : dict
+        ray_id → complex array (23, 28). Rows with a NaN arrival time or angle are left NaN.
+    """
     wavefront_amplitudes = {}
 
     for ray_id in PEAK_BOXES_LOWER:
         wavefront_amplitudes[ray_id] = np.ones((23, 28), dtype="complex") * np.nan
 
     for Tx_num in tqdm(range(len(dss)), desc="Tx num"):
-        thetas = np.linspace(-35, 35, 200)
         lower_Rx = (
             dss[Tx_num]
             .swap_dims({"hydrophone": "nominal_depth"})
             .rename({"nominal_depth": "depth"})[32:]
         )
 
-        bf_unstacked, _ = n23.ULA_conventional_beamform_nostack(lower_Rx, thetas)
-
         for ray_id in PEAK_BOXES_LOWER:
-            bf_single_peak = (
-                bf_unstacked.sel({"angle": arrival_angles[ray_id][Tx_num]})
-                .assign_coords(
-                    {"time": bf_unstacked.time.values - arrival_times[ray_id][Tx_num]}
-                )
-                .sel({"time": slice(-0.15, 0.15)})
-            )
+            t_k = arrival_times[ray_id][Tx_num]
+            theta_k = arrival_angles[ray_id][Tx_num]
+            if np.isnan(t_k) or np.isnan(theta_k):
+                continue
 
-            wavefront_amplitude = bf_single_peak.sel({"time": 0}).values
-            wavefront_amplitudes[ray_id][Tx_num, :] = wavefront_amplitude.copy()
+            window = lower_Rx.sel({"time": slice(t_k - half_window, t_k + half_window)})
+            bf, _ = n23.ULA_conventional_beamform_nostack(window, np.array([theta_k]))
+
+            wavefront_amplitudes[ray_id][Tx_num, :] = (
+                bf.isel({"angle": 0}).sel({"time": t_k}, method="nearest").values
+            )
 
     return wavefront_amplitudes
 
