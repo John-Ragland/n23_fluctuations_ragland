@@ -78,6 +78,7 @@ def main():
             "compute arrival time offset",
             "compute mean pulse",
             "estimate peak locations",
+            "estimate array tilt",
             "compute wavefront values",
             "compute rays",
             "source geometry sweep",
@@ -97,6 +98,8 @@ def main():
         compute_mean_pulse()
     elif choice == "estimate peak locations":
         estimate_peak_locations()
+    elif choice == "estimate array tilt":
+        estimate_array_tilt()
     elif choice == "compute wavefront values":
         get_wavefront_values()
     elif choice == "compute rays":
@@ -127,21 +130,31 @@ def run_all_processing():
     ).ask()
 
     processing_steps = [
-        ("Step 1: Computing arrival time offset", compute_arrival_time_offset),
-        ("Step 2: Estimating peak locations", estimate_peak_locations),
-        ("Step 3: Computing wavefront values", get_wavefront_values),
-        ("Step 4: Computing mean pulse", compute_mean_pulse),
-        ("Step 5: Computing rays", compute_rays),
-        ("Step 6: Source geometry sweep", source_geometry_sweep),
-        ("Step 7: ɸ χ GM least squares fit", phi_chi_LS_fit),
+        ("Step 1: Computing arrival time offset", compute_arrival_time_offset, {}),
+        ("Step 2: Estimating peak locations", estimate_peak_locations, {}),
+        ("Step 3: Estimating array tilt", estimate_array_tilt, {}),
+        (
+            "Step 4: Computing wavefront values",
+            get_wavefront_values,
+            {"remove_array_tilt": False},
+        ),
+        (
+            "Step 5: Computing wavefront values (array tilt removed)",
+            get_wavefront_values,
+            {"remove_array_tilt": True},
+        ),
+        ("Step 6: Computing mean pulse", compute_mean_pulse, {}),
+        ("Step 7: Computing rays", compute_rays, {}),
+        ("Step 8: Source geometry sweep", source_geometry_sweep, {}),
+        ("Step 9: ɸ χ GM least squares fit", phi_chi_LS_fit, {}),
     ]
 
-    for step_name, step_func in processing_steps:
+    for step_name, step_func, step_kwargs in processing_steps:
         print(f"\n{'=' * 60}")
         print(f"{step_name}")
         print(f"{'=' * 60}")
         try:
-            step_func(force_overwrite=overwrite_all)
+            step_func(force_overwrite=overwrite_all, **step_kwargs)
             print(f"✓ {step_name} completed successfully")
         except Exception as e:
             print(f"✗ Error in {step_name}: {e!s}")
@@ -262,35 +275,67 @@ def estimate_peak_locations():
     times, angles, snrs, upper_times, upper_angles, upper_snrs = n23.get_peak_location(
         dss
     )
-    peak_locations = {"times": times, "angles": angles, "snrs": snrs}
+    peak_locations = {
+        "times": times,
+        "angles": angles,
+        "snrs": snrs,
+        "upper_times": upper_times,
+        "upper_angles": upper_angles,
+        "upper_snrs": upper_snrs,
+    }
 
     with (data_dir / "dataproducts" / "peak_locations.pkl").open("wb") as f:
         pickle.dump(peak_locations, f)
 
 
-@check_output_exists(lambda: get_data_dir() / "dataproducts" / "wavefront_values.pkl")
-def get_wavefront_values():
+@check_output_exists(lambda: get_data_dir() / "dataproducts" / "array_tilt.pkl")
+def estimate_array_tilt():
     """
-    Given the estimated peak locations, extract the complex pressure values of the wavefront at these time locations.
+    Estimate the lower-array tilt from the estimated peak locations, see `tools.estimate_array_tilt`.
     """
     data_dir = get_data_dir()
+    array_tilt = tools.estimate_array_tilt(n23.open_peak_locations())
+
+    with (data_dir / "dataproducts" / "array_tilt.pkl").open("wb") as f:
+        pickle.dump(array_tilt, f)
+
+
+def _wavefront_values_path(remove_array_tilt):
+    fn = (
+        "wavefront_values_tilt_removed.pkl"
+        if remove_array_tilt
+        else "wavefront_values.pkl"
+    )
+    return get_data_dir() / "dataproducts" / fn
+
+
+def get_wavefront_values(remove_array_tilt=None, force_overwrite=False):
+    """
+    Given the estimated peak locations, extract the complex pressure values of the wavefront at these time locations.
+
+    With the array tilt removed, each ray is beamformed at its mean angle plus the array tilt and the
+    result is written to ``wavefront_values_tilt_removed.pkl`` instead of ``wavefront_values.pkl``.
+    The user is asked whether to remove the tilt when `remove_array_tilt` is None.
+    """
+    if remove_array_tilt is None:
+        remove_array_tilt = questionary.confirm(
+            "Remove array tilt?", default=False
+        ).ask()
+    _compute_wavefront_values(
+        remove_array_tilt=remove_array_tilt, force_overwrite=force_overwrite
+    )
+
+
+@check_output_exists(
+    lambda remove_array_tilt: _wavefront_values_path(remove_array_tilt)
+)
+def _compute_wavefront_values(remove_array_tilt):
     dss = tools.open_receptions()
+    wavefront_values = tools.get_wavefront_values(
+        dss, remove_array_tilt=remove_array_tilt
+    )
 
-    peak_locations_path = data_dir / "dataproducts" / "peak_locations.pkl"
-    if not peak_locations_path.exists():
-        raise FileNotFoundError(
-            "Peak locations not found. Please run 'estimate peak locations' first."
-        )
-
-    with peak_locations_path.open("rb") as f:
-        peak_locations = pickle.load(f)
-
-    times = peak_locations["times"]
-    angles = peak_locations["angles"]
-
-    wavefront_values = tools.get_wavefront_values(dss, times, angles)
-
-    with (data_dir / "dataproducts" / "wavefront_values.pkl").open("wb") as f:
+    with _wavefront_values_path(remove_array_tilt).open("wb") as f:
         pickle.dump(wavefront_values, f)
 
 

@@ -33,11 +33,17 @@ uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dash
     (`fit_F_phi_chis`, `phi_chi_spectrum_model`); ray-fan/eigenray solving (`run_rays`, via `pr.shoot_ray(s)`,
     `pr.find_eigenrays`); wavefront amplitude extraction (`get_wavefront_values`); mean pulse computation;
     mutual coherence estimation.
+  - `get_wavefront_values(dss, remove_array_tilt=False)` loads its own picks from
+    `nescafe23.open_peak_locations()`. With `remove_array_tilt=True`, each ray is beamformed at
+    its transmission-averaged angle plus the lower-array tilt (`estimate_array_tilt` /
+    `open_array_tilt`, `array_tilt.pkl`) instead of the per-transmission picked angle. The tilt is
+    the mean over rays of the demeaned picked angles. It omits `ARRAY_TILT_OMIT`, the rays with the
+    fewest good QC flags.
   - `EIG_INDEXS` — a large hand-picked dict mapping ray IDs to forward/backward eigenray pair indices, built
     via `notebooks/auxiliary/Ray_forward_backward_matching.ipynb`. **Don't regenerate this programmatically**
     without understanding that provenance — it encodes manual matching decisions, not a derivable rule.
 - **`src/n23_fluctuations_ragland/cli.py`** — `main()`: a `questionary` menu wrapping the processing pipeline
-  (arrival time offset, peak locations, wavefront values, mean pulse, ray computation, source geometry sweep,
+  (arrival time offset, peak locations, array tilt, wavefront values (prompted for tilt removal), mean pulse, ray computation, source geometry sweep,
   φ/χ least-squares fit), each step decorated with `check_output_exists` to skip/overwrite cached outputs.
   `run_all_processing()` chains all steps; `serve_panel_apps()` shells out to `panel serve` on `panel_apps/`.
   Two more menu entries drive the publication figures: "create publication figures config" copies
@@ -80,7 +86,7 @@ uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dash
   downstream notebooks unless you pass `force_overwrite=True` or delete the stale pickle under
   `NESCAFE23_DATADIR/dataproducts/`.
 - Data products live under `NESCAFE23_DATADIR/dataproducts/`: pickles (`ray_run_forward_back.pkl`,
-  `wavefront_values.pkl`, `peak_locations.pkl`, `ray_geo_sweep.pkl`, `phi_chi_LS_fit.pkl`,
+  `wavefront_values.pkl`, `wavefront_values_tilt_removed.pkl`, `array_tilt.pkl`, `peak_locations.pkl`, `ray_geo_sweep.pkl`, `phi_chi_LS_fit.pkl`,
   `T_t_estimated.pkl`) and NetCDF (`mean_pulse_*.nc`). Raw transmissions come from `.mat` files under
   `dmod/`. Figures are saved as PDFs to `figures/`.
 - Notebooks are stripped of outputs via `nbstripout` as a git filter — run `nbstripout --install` locally.

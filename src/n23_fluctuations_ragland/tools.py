@@ -117,20 +117,96 @@ def get_fctd(fn, filt=True, z_smooth=100, r_smooth=10e3, r_shift=0):
     return fctd_flip
 
 
-def get_wavefront_values(dss, arrival_times, arrival_angles, half_window=1.0):
+ARRAY_TILT_OMIT = ("-15b", "-14b", "-6b", "-13b")
+
+
+def estimate_array_tilt(peak_locations, omit=ARRAY_TILT_OMIT):
+    """
+    Estimate the lower-array tilt from the per-transmission scatter common to all arrival angles.
+
+    Each ray's picked angle is demeaned over transmissions, and the tilt is the mean of those
+    anomalies across rays (`notebooks/publication_figures/receptions.ipynb`, "Array tilt
+    estimation and removal").
+
+    Parameters
+    ----------
+    peak_locations : dict
+        picks from `nescafe23.open_peak_locations()`; only ``angles`` is used
+    omit : tuple of str
+        ray ids left out of the tilt average. The default drops the four rays with the fewest
+        good QC flags.
+
+    Returns
+    -------
+    array_tilt : dict
+        ``array_tilt``: (23,) tilt [deg]; ``mean_angles``: ray_id → transmission-averaged angle
+        [deg]; ``angles_plus_tilt``: ray_id → (23,) ``mean_angles[ray_id] + array_tilt`` [deg],
+        for every ray including the omitted ones; ``omit``; ``notes``.
+    """
+    angles = peak_locations["angles"]
+    mean_angles = {ray_id: np.nanmean(angles[ray_id]) for ray_id in angles}
+
+    anomalies = np.array(
+        [
+            angles[ray_id] - mean_angles[ray_id]
+            for ray_id in angles
+            if ray_id not in omit
+        ]
+    )
+    array_tilt = np.nanmean(anomalies, axis=0)
+
+    angles_plus_tilt = {
+        ray_id: mean_angles[ray_id] + array_tilt for ray_id in mean_angles
+    }
+
+    return {
+        "array_tilt": array_tilt,
+        "mean_angles": mean_angles,
+        "angles_plus_tilt": angles_plus_tilt,
+        "omit": tuple(omit),
+        "notes": "array tilt is the mean over rays of the demeaned peak_locations arrival angles",
+    }
+
+
+def open_array_tilt():
+    """
+    Open the array tilt estimate, ``dataproducts/array_tilt.pkl``.
+
+    The file is produced by running ``n23_fluctuation_analysis`` and selecting
+    **estimate array tilt**.
+
+    Returns
+    -------
+    array_tilt : dict
+        see `estimate_array_tilt`
+    """
+    path = get_data_dir() / "dataproducts" / "array_tilt.pkl"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Array tilt file not found at {path}.\n"
+            "Generate it by running 'n23_fluctuation_analysis' and selecting "
+            "'estimate array tilt'."
+        )
+    with path.open("rb") as f:
+        return pickle.load(f)
+
+
+def get_wavefront_values(dss, remove_array_tilt=False, half_window=1.0):
     """
     Unstacked beamformer output of the lower array at each ray's arrival time and angle.
 
     Each ray is beamformed at its own (arbitrary, off-grid) angle over a short window around
-    its arrival, so no angle grid is involved.
+    its arrival, so no angle grid is involved. Arrival times always come from
+    `nescafe23.open_peak_locations()`.
 
     Parameters
     ----------
     dss : list
-    arrival_times : dict
-        ray_id → array of arrival times [s] (shape: 23)
-    arrival_angles : dict
-        ray_id → array of arrival angles [deg] (shape: 23). Any real value is allowed.
+    remove_array_tilt : bool
+        If False, beamform at the angle picked on each transmission (``peak_locations["angles"]``).
+        If True, beamform at the ray's transmission-averaged angle plus the array tilt,
+        ``open_array_tilt()["angles_plus_tilt"]``, so the per-transmission angle scatter is only
+        the tilt common to all rays. Default is False.
     half_window : float
         half width [s] of the time window beamformed around each arrival. Must comfortably exceed
         the largest plane-wave delay across the array (~46 ms at 35°) so the FFT wrap-around stays
@@ -141,6 +217,13 @@ def get_wavefront_values(dss, arrival_times, arrival_angles, half_window=1.0):
     wavefront_amplitudes : dict
         ray_id → complex array (23, 28). Rows with a NaN arrival time or angle are left NaN.
     """
+    peak_locations = n23.open_peak_locations()
+    arrival_times = peak_locations["times"]
+    if remove_array_tilt:
+        arrival_angles = open_array_tilt()["angles_plus_tilt"]
+    else:
+        arrival_angles = peak_locations["angles"]
+
     wavefront_amplitudes = {}
 
     for ray_id in PEAK_BOXES_LOWER:

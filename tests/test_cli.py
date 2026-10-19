@@ -16,6 +16,7 @@ def test_cli_imports():
         "compute_mean_pulse",
         "compute_rays",
         "estimate_peak_locations",
+        "estimate_array_tilt",
         "get_wavefront_values",
         "phi_chi_LS_fit",
         "run_all_processing",
@@ -34,6 +35,8 @@ def test_tools_has_required_functions():
     required = [
         "open_receptions",
         "get_wavefront_values",
+        "estimate_array_tilt",
+        "open_array_tilt",
         "run_rays",
         "compute_mean_pulse",
         "estimate_F_phi_chi",
@@ -118,7 +121,7 @@ def test_check_output_exists_skips_existing(tmp_path, monkeypatch):
 
 
 def test_run_all_processing_has_all_steps():
-    """run_all_processing includes all 7 processing steps."""
+    """run_all_processing includes every processing step."""
     import inspect
 
     from n23_fluctuations_ragland import cli
@@ -128,6 +131,7 @@ def test_run_all_processing_has_all_steps():
     expected_funcs = [
         "compute_arrival_time_offset",
         "estimate_peak_locations",
+        "estimate_array_tilt",
         "get_wavefront_values",
         "compute_mean_pulse",
         "compute_rays",
@@ -207,3 +211,64 @@ def test_coherence_lengths_latex_table():
     assert rows[1] == "$+7$ & -- & 50.0 & -- & 120.0 & -- \\\\"
     assert rows[2] == "$-6$ & 0 & 100.0 & 90.0 & 60.0 & 30.0 \\\\"
     assert rows[3].startswith("$-6$ & 1 & -- & 95.0")
+
+
+def test_estimate_array_tilt_recovers_tilt():
+    """The tilt common to all rays is recovered, omitted rays are excluded but still get angles."""
+    import numpy as np
+
+    from n23_fluctuations_ragland import tools
+
+    rng = np.random.default_rng(0)
+    tilt = rng.normal(0, 1, 23)
+    angles = {
+        "+7": 5.0 + tilt,
+        "-7": -5.0 + tilt,
+        "+10b": 12.0 + tilt,
+        "-15b": -20.0 + rng.normal(0, 3, 23),
+    }
+
+    result = tools.estimate_array_tilt({"angles": angles}, omit=("-15b",))
+
+    assert np.allclose(result["array_tilt"], tilt - tilt.mean())
+    assert result["omit"] == ("-15b",)
+    assert set(result["angles_plus_tilt"]) == set(angles)
+    for ray_id, angle in angles.items():
+        assert np.isclose(result["mean_angles"][ray_id], angle.mean())
+        assert np.allclose(
+            result["angles_plus_tilt"][ray_id], angle.mean() + result["array_tilt"]
+        )
+
+
+def test_get_wavefront_values_signature():
+    """get_wavefront_values reads its own picks and selects the angles with remove_array_tilt."""
+    import inspect
+
+    from n23_fluctuations_ragland import tools
+
+    params = inspect.signature(tools.get_wavefront_values).parameters
+    assert params["remove_array_tilt"].default is False
+    assert "arrival_times" not in params
+    assert "arrival_angles" not in params
+
+
+def test_wavefront_values_paths_per_mode(tmp_path, monkeypatch):
+    """Tilt-removed wavefront values are written to their own file."""
+    import n23_fluctuations_ragland.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "get_data_dir", lambda: tmp_path)
+    assert cli_mod._wavefront_values_path(False).name == "wavefront_values.pkl"
+    assert (
+        cli_mod._wavefront_values_path(True).name == "wavefront_values_tilt_removed.pkl"
+    )
+
+
+def test_peak_locations_saves_upper_array():
+    """peak_locations.pkl keeps the upper-array keys that n23_inversion_ragland reads."""
+    import inspect
+
+    import n23_fluctuations_ragland.cli as cli_mod
+
+    source = inspect.getsource(cli_mod.estimate_peak_locations)
+    for key in ('"upper_times"', '"upper_angles"', '"upper_snrs"'):
+        assert key in source, f"peak_locations.pkl must contain {key}"
