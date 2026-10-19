@@ -52,6 +52,9 @@ uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dash
   - `Map` and the ellipses/labels on `Acoustic_Receptions` were hand-annotated in the published
     versions. They are recreated in code with positions measured off the reference images, so expect
     them to need nudging if the data or layout changes.
+  - Multi-pane figures end with `label_panels(axes, locs)`, which letters the panes `(a)`, `(b)`, …
+    The default spot is the upper right. Each figure overrides that where the corner would cover data.
+    `Ducted_Intensity_Distribution` is deliberately unlettered.
   - `common_arrival_time_shift_estimation` reads `dT_t_upper`/`dT_t_lower` from `T_t_estimated.pkl`.
     Only this project's "compute arrival time offset" writes those keys. The base `nescafe23` CLI
     writes the same file without them.

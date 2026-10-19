@@ -208,3 +208,4 @@ uv.lock
 *.mat
 
 reference/
+notebooks/auxiliary/
