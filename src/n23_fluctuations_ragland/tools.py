@@ -1279,33 +1279,42 @@ def compute_brack_sigma2(
     sigma_L2 = f**2 + N**2 * np.tan(rv["Theta_ray"]) ** 2
     sigma_L = np.sqrt(sigma_L2)
 
-    # normalization, Eq. C.2 (same quantity as W in `compute_F_phi_chi`)
-    M_sigma_inv = 0.5 * (
-        np.sqrt((1 - (sigma_L2 / N**2)) * (1 - (f**2 / N**2)))
-        + ((sigma_L / f) - (f / sigma_L))
-        * np.log(
-            (np.sqrt(1 - (f**2 / N**2)) + np.sqrt((f**2 / sigma_L2) - (f**2 / N**2)))
-            / (np.sqrt(1 - (f**2 / sigma_L2)))
-        )
-    )
-
-    # Eq. C.1
-    A = np.sqrt(N**2 - sigma_L2) * np.sqrt(N**2 - f**2)
-    brack_sigma2 = (
-        sigma_L2
-        / (2 * M_sigma_inv)
-        * (
-            np.log((2 * N**2 - sigma_L2 - f**2 + 2 * A) / (sigma_L2 - f**2))
-            + (f / sigma_L)
+    # undefined values (N = 0, sigma_L >= N, turning points) are expected and set to zero below
+    with np.errstate(divide="ignore", invalid="ignore"):
+        # normalization, Eq. C.2 (same quantity as W in `compute_F_phi_chi`)
+        M_sigma_inv = 0.5 * (
+            np.sqrt((1 - (sigma_L2 / N**2)) * (1 - (f**2 / N**2)))
+            + ((sigma_L / f) - (f / sigma_L))
             * np.log(
-                (N**2 * (sigma_L2 + f**2) - 2 * f**2 * sigma_L2 - 2 * f * sigma_L * A)
-                / (N**2 * (sigma_L2 - f**2))
+                (
+                    np.sqrt(1 - (f**2 / N**2))
+                    + np.sqrt((f**2 / sigma_L2) - (f**2 / N**2))
+                )
+                / (np.sqrt(1 - (f**2 / sigma_L2)))
             )
         )
-    )
 
-    # axial-ray limit, where Eq. C.1 is numerically unstable
-    brack_sigma2_axial = 2 * N**2 * f**2 * np.log(N / f) / (N**2 - f**2)
+        # Eq. C.1
+        A = np.sqrt(N**2 - sigma_L2) * np.sqrt(N**2 - f**2)
+        brack_sigma2 = (
+            sigma_L2
+            / (2 * M_sigma_inv)
+            * (
+                np.log((2 * N**2 - sigma_L2 - f**2 + 2 * A) / (sigma_L2 - f**2))
+                + (f / sigma_L)
+                * np.log(
+                    (
+                        N**2 * (sigma_L2 + f**2)
+                        - 2 * f**2 * sigma_L2
+                        - 2 * f * sigma_L * A
+                    )
+                    / (N**2 * (sigma_L2 - f**2))
+                )
+            )
+        )
+
+        # axial-ray limit, where Eq. C.1 is numerically unstable
+        brack_sigma2_axial = 2 * N**2 * f**2 * np.log(N / f) / (N**2 - f**2)
     brack_sigma2 = brack_sigma2.where(
         (sigma_L2 - f**2) / f**2 > 1e-4, brack_sigma2_axial
     )
@@ -1392,14 +1401,15 @@ def compute_time_coherence_length(
 
     brack_sigma2 = compute_brack_sigma2(rv, f)
 
-    integrand = (
-        wc**2
-        * rv["mu2"].values
-        * rv["L_p"].values
-        / (rv["Cray"].values ** 2)
-        * brack_sigma2.values
-        * np.sqrt(rv["drdt"] ** 2 + rv["dzdt"] ** 2)
-    )
+    with np.errstate(invalid="ignore"):
+        integrand = (
+            wc**2
+            * rv["mu2"].values
+            * rv["L_p"].values
+            / (rv["Cray"].values ** 2)
+            * brack_sigma2.values
+            * np.sqrt(rv["drdt"] ** 2 + rv["dzdt"] ** 2)
+        )
     # set any nan values to zero
     integrand = np.where(np.isfinite(integrand), integrand, 0)
 
@@ -1408,13 +1418,124 @@ def compute_time_coherence_length(
     return t0, integrand
 
 
-def estimate_mutual_coherence(X, T, omit_zero_lag: bool = True, norm: bool = True):
+def effective_sample_size(
+    M: int, dt: float | None = None, t0: float | None = None
+) -> float:
+    r"""
+    Effective number of independent snapshots $M_\mathrm{eff}$ of $M$ snapshots spaced $\Delta t$ apart,
+    with Gaussian time coherence $\rho_t(\tau) = \exp(-\tau^2 / 2 t_0^2)$ (Bayley & Hammersley 1946):
+
+    $$M_\mathrm{eff} = \frac{M^2}{\sum_{k,k'} \rho_t^2((k-k')\Delta t)}
+        = \frac{M}{\sum_{|j|<M} (1 - |j|/M)\, \rho_t^2(j \Delta t)}$$
+
+    $M_\mathrm{eff} = M$ for $t_0 \to 0$, and $M_\mathrm{eff} \approx M \Delta t / (\sqrt{\pi} t_0)$ for
+    $M \Delta t \gg t_0$. $\rho_t^2$ (not $\rho_t$) appears because this is the effective sample size for a
+    second-order statistic (a correlation estimate), not for a mean.
+
+    Parameters
+    ----------
+    M : int
+        number of snapshots
+    dt : float
+        time between snapshots, same units as `t0`
+    t0 : float
+        coherence time, same units as `dt`. If None or 0, the snapshots are independent and M is returned.
+
+    Returns
+    -------
+    M_eff : float
+        effective number of independent snapshots, $1 \le M_\mathrm{eff} \le M$
+    """
+    if t0 is None or t0 == 0:
+        return float(M)
+    if dt is None:
+        msg = "dt is required when t0 is given"
+        raise ValueError(msg)
+
+    j = np.arange(-M + 1, M)
+    rho_t2 = np.exp(-((j * dt / t0) ** 2))
+    return float(M / np.sum((1 - np.abs(j) / M) * rho_t2))
+
+
+def mutual_coherence_covariance(R, M_eff: float, gamma: float = 0.5):
+    r"""
+    Covariance between lags of the (real part of the) unbiased mutual coherence estimate
+    $\hat{C}(l) = \frac{1}{M} \sum_k \frac{1}{N_l} \sum_{n<N_l} x_k[n+l] x_k^*[n]$, $N_l = N - |l|$
+    (Bartlett's formula). For a zero-mean Gaussian field with correlation $R(d)$ in the sample dimension,
+    Isserlis' theorem gives
+
+    $$\mathrm{Cov}[\hat{C}(l), \hat{C}(m)] = \frac{\gamma}{M_\mathrm{eff} N_l N_m}
+        \sum_{n<N_l} \sum_{n'<N_m} \left[ R(n-n'+l-m) R(n-n') + R(n-n'+l) R(n-n'-m) \right]$$
+
+    where $\gamma = 1/2$ for the real part of a circular complex field and $\gamma = 1$ for a real field.
+    Every argument of $R$ in the sum has $|d| \le N-1$.
+
+    Parameters
+    ----------
+    R : np.array
+        Array of shape (N,), real correlation at lags 0, ..., N-1 (symmetric, $R(-d) = R(d)$)
+    M_eff : float
+        effective number of independent snapshots, see `effective_sample_size`
+    gamma : float
+        1/2 for complex data, 1 for real data
+
+    Returns
+    -------
+    cov : np.array
+        Array of shape (N,N), covariance of $\hat{C}$ between lags 0, ..., N-1, in units of R^2
+    """
+    R = np.asarray(R, dtype=float)
+    N = len(R)
+    # R_sym[d + N - 1] = R(d) for d in -(N-1), ..., N-1
+    R_sym = np.concatenate([R[:0:-1], R])
+
+    def R_at(d):
+        return R_sym[d + N - 1]
+
+    cov = np.empty((N, N))
+    for lag_l in range(N):
+        for lag_m in range(lag_l, N):
+            d = np.subtract.outer(np.arange(N - lag_l), np.arange(N - lag_m))
+            s = np.sum(
+                R_at(d + lag_l - lag_m) * R_at(d) + R_at(d + lag_l) * R_at(d - lag_m)
+            )
+            cov[lag_l, lag_m] = cov[lag_m, lag_l] = (
+                gamma * s / (M_eff * (N - lag_l) * (N - lag_m))
+            )
+
+    return cov
+
+
+def estimate_mutual_coherence(
+    X,
+    T,
+    omit_zero_lag: bool = True,
+    norm: bool = True,
+    dt: float | None = None,
+    t0: float | None = None,
+):
     r"""
     Given array X of shape (M,N) containing M snapshots of vector $\\in \\mathbb{R}^N$
         where the vector contains equally spaced samples in dimension that mutual coherence is to be estimated.
 
     The mutual coherence is estimated with an unbiased complex cross-correlation of the values of X along dim 1,
         and averaged along all common lags, and all snapshots.
+
+    The variance of the estimate is from Bartlett's formula (`mutual_coherence_covariance`), with the
+    estimated (unnormalized, real part) correlation $\hat{R}(d)$ at all lags plugged in for the true $R(d)$.
+    No shape is assumed for the coherence along dim 1. $\hat{R}(0)$ includes the noise, which correctly adds
+    to the variance of the zero-lag products. The snapshots are correlated with Gaussian coherence time `t0`,
+    which reduces M to `effective_sample_size(M, dt, t0)`. When normalized by the reference lag $r$, the
+    variance of the ratio is from the delta method,
+
+    $$\mathrm{Var}\left[\frac{\hat{C}(l)}{\hat{C}(r)}\right] \approx \frac{\mathrm{Var}\,\hat{C}(l)
+        - 2\, MC(l)\, \mathrm{Cov}[\hat{C}(l), \hat{C}(r)] + MC(l)^2\, \mathrm{Var}\,\hat{C}(r)}{\hat{C}(r)^2}$$
+
+    which is 0 at $l = r$.
+
+    Assumptions: zero mean, Gaussian, stationary along dim 1, and separable in dim 1 and snapshots. Real
+    input (e.g. `np.abs(X)`) uses $\gamma = 1$, but its nonzero mean is not removed, so its variance is only
+    approximate. $\hat{R}$ at the largest lags is from few samples and noisy; it is not truncated.
 
     Parameters
     ----------
@@ -1426,14 +1547,23 @@ def estimate_mutual_coherence(X, T, omit_zero_lag: bool = True, norm: bool = Tru
         If False, zero lag is included and normalized by this. Default is True.
     norm : bool
         If True, normalize the mutual coherence by the value at the smallest non-zero lag (to remove bias from noise at lag=0). Default is True.
+    dt : float
+        time between snapshots, same units as `t0`. Required if `t0` is given.
+    t0 : float
+        coherence time between snapshots. If None (default), the snapshots are independent.
 
     Returns
     -------
-    MC : np.array
-        Array of shape (N,). Normalized mutual coherence, normalized by the value at the smallest
-        non-zero lag (to remove bias from noise at lag=0).
     t : np.array
         Array containing the lags of MC in units of T
+    MC : np.array
+        mutual coherence at lags `t`, normalized by the value at the reference lag if `norm`
+    MC_var : np.array
+        variance of MC at lags `t`, in the units of MC squared
+    MC_noise_ratio : float
+        ratio of the lag 0 to lag 1 mutual coherence
+    denom : np.array
+        number of samples N - |lag| at lags `t`, per snapshot
     """
 
     Rxxs = []
@@ -1470,8 +1600,20 @@ def estimate_mutual_coherence(X, T, omit_zero_lag: bool = True, norm: bool = Tru
         t = np.arange(T, N * T - np.finfo(float).eps, T)
         start = N
 
-    # variance of estimate, on the same lags as MC
-    MC_var = (1 / (M * denom))[start:]
+    # variance of estimate (Bartlett), on lags 0, ..., N-1
+    R = MC_full.real[N - 1 :]
+    gamma = 0.5 if np.iscomplexobj(X) else 1.0
+    cov = mutual_coherence_covariance(R, effective_sample_size(M, dt, t0), gamma)
+
+    # restrict to the same lags as MC
+    lag_idx = np.arange(start - (N - 1), N)
+    if norm:
+        r = lag_idx[0]  # reference lag
+        MC_var = (
+            np.diag(cov)[lag_idx] - 2 * MC * cov[lag_idx, r] + MC**2 * cov[r, r]
+        ) / R[r] ** 2
+    else:
+        MC_var = np.diag(cov)[lag_idx]
 
     return t, MC, MC_var, MC_noise_ratio, denom[start:]
 

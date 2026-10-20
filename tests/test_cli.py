@@ -272,3 +272,67 @@ def test_peak_locations_saves_upper_array():
     source = inspect.getsource(cli_mod.estimate_peak_locations)
     for key in ('"upper_times"', '"upper_angles"', '"upper_snrs"'):
         assert key in source, f"peak_locations.pkl must contain {key}"
+
+
+def test_effective_sample_size():
+    """M_eff is M for independent snapshots and M dt / (sqrt(pi) t0) for a long record."""
+    import numpy as np
+
+    from n23_fluctuations_ragland import tools
+
+    assert tools.effective_sample_size(23) == 23
+    assert tools.effective_sample_size(23, 3600.0, 0) == 23
+    assert np.isclose(
+        tools.effective_sample_size(2000, 1.0, 10.0),
+        2000 / (np.sqrt(np.pi) * 10.0),
+        rtol=0.01,
+    )
+    assert 1 <= tools.effective_sample_size(23, 3600.0, 3 * 3600.0) <= 23
+
+
+def _simulate_snapshots(rng, M, N, z0, t0, noise_std):
+    """
+    Circular complex Gaussian snapshots, Gaussian coherence in both dims plus noise that is white in
+    depth. The noise has the same time coherence as the signal, so the field is separable.
+    """
+    import numpy as np
+
+    def chol(n, L):
+        d = np.subtract.outer(np.arange(n), np.arange(n))
+        return np.linalg.cholesky(np.exp(-0.5 * (d / L) ** 2) + 1e-8 * np.eye(n))
+
+    Lz, Lt = chol(N, z0), chol(M, t0)
+    W = (rng.standard_normal((M, N)) + 1j * rng.standard_normal((M, N))) / np.sqrt(2)
+    noise = (rng.standard_normal((M, N)) + 1j * rng.standard_normal((M, N))) / np.sqrt(
+        2
+    )
+    return Lt @ (W @ Lz.T + noise_std * noise)
+
+
+def test_mutual_coherence_variance_monte_carlo():
+    """The Bartlett variance matches the Monte Carlo variance, with and without time correlation."""
+    import numpy as np
+
+    from n23_fluctuations_ragland import tools
+
+    rng = np.random.default_rng(0)
+    M, N, z0, n_real = 40, 16, 3.0, 400
+
+    for t0 in [None, 3.0]:
+        for norm, omit_zero_lag in [(False, False), (True, True)]:
+            MCs, MC_vars = [], []
+            for _ in range(n_real):
+                X = _simulate_snapshots(rng, M, N, z0, t0 or 1e-6, noise_std=0.5)
+                _, MC, MC_var, _, _ = tools.estimate_mutual_coherence(
+                    X, 1.0, omit_zero_lag=omit_zero_lag, norm=norm, dt=1.0, t0=t0
+                )
+                MCs.append(MC)
+                MC_vars.append(MC_var)
+
+            empirical = np.var(MCs, axis=0)
+            predicted = np.mean(MC_vars, axis=0)
+            # the reference lag has zero variance when normalized
+            check = slice(1, N // 2) if norm else slice(0, N // 2)
+            if norm:
+                assert np.allclose(predicted[0], 0)
+            np.testing.assert_allclose(predicted[check], empirical[check], rtol=0.25)
