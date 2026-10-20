@@ -1037,7 +1037,10 @@ def plot_ctd_fctd(cfg: PublicationFiguresConfig) -> Figure:
 
 
 def plot_arrival_time_shift(cfg: PublicationFiguresConfig) -> Figure:
-    """Common arrival-time shift per transmission (from ``compute arrival time offset``)."""
+    """Common arrival-time shift (top) and lower-array tilt (bottom) per transmission.
+
+    Reads the outputs of ``compute arrival time offset`` and ``estimate array tilt``.
+    """
     T_t = _load_pickle("T_t_estimated.pkl", "compute arrival time offset")
     if "dT_t_upper" not in T_t or "dT_t_lower" not in T_t:
         msg = (
@@ -1046,25 +1049,34 @@ def plot_arrival_time_shift(cfg: PublicationFiguresConfig) -> Figure:
             "project; rerun 'compute arrival time offset' in `n23_fluctuation_analysis`."
         )
         raise KeyError(msg)
-    dT_t_upper = T_t["dT_t_upper"]
-    dT_t_lower = T_t["dT_t_lower"]
+    # dT_t_upper = T_t["dT_t_upper"]
+    # dT_t_lower = T_t["dT_t_lower"]
     dT_avg = T_t["dT_t"]
+    array_tilt = _load_pickle("array_tilt.pkl", "estimate array tilt")["array_tilt"]
 
     plt.rcParams.update({"font.size": 8})
     plt.rcParams.update({"text.usetex": cfg.usetex})
 
-    fig = plt.figure(figsize=(3.37, 2))
-    plt.plot(
-        np.arange(1, 24), dT_t_upper, label="upper array", c="k", linestyle="--", lw=1
-    )
-    plt.plot(
-        np.arange(1, 24), dT_t_lower, label="lower array", c="k", linestyle="-.", lw=1
-    )
-    plt.plot(np.arange(1, 24), dT_avg, c="k", lw=1, label="average")
+    fig, axes = plt.subplots(2, 1, figsize=(3.33, 3.5), sharex=True)
+
+    plt.sca(axes[0])
+    # plt.plot(
+    #    np.arange(1, 24), dT_t_upper, label="upper array", c="k", linestyle="--", lw=1
+    # )
+    # plt.plot(
+    #    np.arange(1, 24), dT_t_lower, label="lower array", c="k", linestyle="-.", lw=1
+    # )
+    plt.plot(np.arange(1, 24), dT_avg, c="k", lw=2, label="average")
     plt.ylabel("$\\Delta \\tau$ [s]")
-    plt.legend()
+    # plt.legend(loc="upper right")
+
+    plt.sca(axes[1])
+    plt.plot(np.arange(1, 24), array_tilt, c="k", lw=2)
+    plt.ylabel("array tilt [$^\\circ$]")
     plt.xlabel("transmission number")
+
     plt.tight_layout()
+    label_panels(axes, "upper left")
     return fig
 
 
