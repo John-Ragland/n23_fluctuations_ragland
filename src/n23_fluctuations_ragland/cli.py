@@ -146,7 +146,16 @@ def run_all_processing():
         ("Step 6: Computing mean pulse", compute_mean_pulse, {}),
         ("Step 7: Computing rays", compute_rays, {}),
         ("Step 8: Source geometry sweep", source_geometry_sweep, {}),
-        ("Step 9: ɸ χ GM least squares fit", phi_chi_LS_fit, {}),
+        (
+            "Step 9: ɸ χ GM least squares fit",
+            phi_chi_LS_fit,
+            {"remove_array_tilt": False},
+        ),
+        (
+            "Step 10: ɸ χ GM least squares fit (array tilt removed)",
+            phi_chi_LS_fit,
+            {"remove_array_tilt": True},
+        ),
     ]
 
     for step_name, step_func, step_kwargs in processing_steps:
@@ -288,6 +297,10 @@ def estimate_peak_locations():
         pickle.dump(peak_locations, f)
 
 
+def _ask_remove_array_tilt():
+    return questionary.confirm("Remove array tilt?", default=True).ask()
+
+
 @check_output_exists(lambda: get_data_dir() / "dataproducts" / "array_tilt.pkl")
 def estimate_array_tilt():
     """
@@ -301,12 +314,7 @@ def estimate_array_tilt():
 
 
 def _wavefront_values_path(remove_array_tilt):
-    fn = (
-        "wavefront_values_tilt_removed.pkl"
-        if remove_array_tilt
-        else "wavefront_values.pkl"
-    )
-    return get_data_dir() / "dataproducts" / fn
+    return tools.wavefront_values_path(remove_array_tilt)
 
 
 def get_wavefront_values(remove_array_tilt=None, force_overwrite=False):
@@ -318,9 +326,7 @@ def get_wavefront_values(remove_array_tilt=None, force_overwrite=False):
     The user is asked whether to remove the tilt when `remove_array_tilt` is None.
     """
     if remove_array_tilt is None:
-        remove_array_tilt = questionary.confirm(
-            "Remove array tilt?", default=False
-        ).ask()
+        remove_array_tilt = _ask_remove_array_tilt()
     _compute_wavefront_values(
         remove_array_tilt=remove_array_tilt, force_overwrite=force_overwrite
     )
@@ -499,27 +505,52 @@ def compute_mean_pulse():
     )
 
 
-@check_output_exists(lambda: get_data_dir() / "dataproducts" / "phi_chi_LS_fit.pkl")
-def phi_chi_LS_fit():
-    data_dir = get_data_dir()
-    m_data, _, _, F_phi_lm, F_phi_ls, F_chi_lm, F_chi_ls = tools.estimate_F_phi_chi()
+def phi_chi_LS_fit(remove_array_tilt=None, force_overwrite=False):
+    """
+    Fit the GM energy and observational noise levels to the observed ɸ and χ spectra.
+
+    The spectra are estimated from ``wavefront_values_tilt_removed.pkl`` with the array tilt removed
+    and the fit is written to ``phi_chi_LS_fit_tilt_removed.pkl``, otherwise from
+    ``wavefront_values.pkl`` to ``phi_chi_LS_fit.pkl``. The user is asked whether to remove the tilt
+    when `remove_array_tilt` is None.
+    """
+    if remove_array_tilt is None:
+        remove_array_tilt = _ask_remove_array_tilt()
+    _compute_phi_chi_LS_fit(
+        remove_array_tilt=remove_array_tilt, force_overwrite=force_overwrite
+    )
+
+
+@check_output_exists(
+    lambda remove_array_tilt: tools.phi_chi_LS_fit_path(remove_array_tilt)
+)
+def _compute_phi_chi_LS_fit(remove_array_tilt):
+    m_data, _, _, F_phi_lm, F_phi_ls, F_chi_lm, F_chi_ls = tools.estimate_F_phi_chi(
+        remove_array_tilt=remove_array_tilt
+    )
     results = tools.fit_F_phi_chis(m_data, F_phi_lm, F_chi_lm, F_phi_ls, F_chi_ls)
 
-    with (data_dir / "dataproducts" / "phi_chi_LS_fit.pkl").open("wb") as f:
+    with tools.phi_chi_LS_fit_path(remove_array_tilt).open("wb") as f:
         pickle.dump(results, f)
 
 
-def coherence_lengths():
+def coherence_lengths(remove_array_tilt=None):
     """
     Print a LaTeX table of the observed (Gaussian fit to the mutual coherence) and theoretical (1GM path
     integral) vertical coherence lengths and coherence times for each ray.
-    """
-    data_dir = get_data_dir()
 
-    wavefront_values_path = data_dir / "dataproducts" / "wavefront_values.pkl"
+    The user is asked whether to use the wavefront values with the array tilt removed when
+    `remove_array_tilt` is None.
+    """
+    if remove_array_tilt is None:
+        remove_array_tilt = _ask_remove_array_tilt()
+
+    wavefront_values_path = tools.wavefront_values_path(remove_array_tilt)
     if not wavefront_values_path.exists():
+        mode = " (array tilt removed)" if remove_array_tilt else ""
         raise FileNotFoundError(
-            "Wavefront values not found. Please run 'compute wavefront values' first."
+            f"Wavefront values{mode} not found at {wavefront_values_path}. "
+            "Please run 'compute wavefront values' first."
         )
 
     with wavefront_values_path.open("rb") as f:

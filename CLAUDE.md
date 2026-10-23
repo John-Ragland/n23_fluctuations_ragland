@@ -43,8 +43,11 @@ uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dash
     via `notebooks/auxiliary/Ray_forward_backward_matching.ipynb`. **Don't regenerate this programmatically**
     without understanding that provenance — it encodes manual matching decisions, not a derivable rule.
 - **`src/n23_fluctuations_ragland/cli.py`** — `main()`: a `questionary` menu wrapping the processing pipeline
-  (arrival time offset, peak locations, array tilt, wavefront values (prompted for tilt removal), mean pulse, ray computation, source geometry sweep,
+  (arrival time offset, peak locations, array tilt, wavefront values, mean pulse, ray computation, source geometry sweep,
   φ/χ least-squares fit), each step decorated with `check_output_exists` to skip/overwrite cached outputs.
+  Wavefront values, the φ/χ fit and the coherence-lengths table each ask "Remove array tilt?"
+  (default yes) and read/write the `*_tilt_removed.pkl` products when it's yes; `run_all_processing()`
+  runs both modes of the wavefront values and the fit.
   `run_all_processing()` chains all steps; `serve_panel_apps()` shells out to `panel serve` on `panel_apps/`.
   Two more menu entries drive the publication figures: "create publication figures config" copies
   the template to a `config.yaml`, and "generate publication figures" builds from one.
@@ -61,6 +64,11 @@ uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dash
   - Multi-pane figures end with `label_panels(axes, locs)`, which letters the panes `(a)`, `(b)`, …
     The default spot is the upper right. Each figure overrides that where the corner would cover data.
     `Ducted_Intensity_Distribution` is deliberately unlettered.
+  - The config's `remove_array_tilt` (default `true`) selects the wavefront values
+    (`wavefront_values_tilt_removed.pkl` vs `wavefront_values.pkl`) for `F_phi_chi_ducted`,
+    `Ducted_Intensity_Distribution` and `Ducted_VC`, and the matching φ/χ fit
+    (`phi_chi_LS_fit_tilt_removed.pkl` vs `phi_chi_LS_fit.pkl`) for `F_phi_chi_ducted`.
+    The notebooks still use `remove_array_tilt=False` and `phi_chi_LS_fit.pkl`.
   - `common_arrival_time_shift_estimation` reads `dT_t_upper`/`dT_t_lower` from `T_t_estimated.pkl`.
     Only this project's "compute arrival time offset" writes those keys. The base `nescafe23` CLI
     writes the same file without them.
@@ -86,7 +94,7 @@ uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dash
   downstream notebooks unless you pass `force_overwrite=True` or delete the stale pickle under
   `NESCAFE23_DATADIR/dataproducts/`.
 - Data products live under `NESCAFE23_DATADIR/dataproducts/`: pickles (`ray_run_forward_back.pkl`,
-  `wavefront_values.pkl`, `wavefront_values_tilt_removed.pkl`, `array_tilt.pkl`, `peak_locations.pkl`, `ray_geo_sweep.pkl`, `phi_chi_LS_fit.pkl`,
+  `wavefront_values.pkl`, `wavefront_values_tilt_removed.pkl`, `array_tilt.pkl`, `peak_locations.pkl`, `ray_geo_sweep.pkl`, `phi_chi_LS_fit.pkl`, `phi_chi_LS_fit_tilt_removed.pkl`,
   `T_t_estimated.pkl`) and NetCDF (`mean_pulse_*.nc`). Raw transmissions come from `.mat` files under
   `dmod/`. Figures are saved as PDFs to `figures/`.
 - Notebooks are stripped of outputs via `nbstripout` as a git filter — run `nbstripout --install` locally.

@@ -48,6 +48,7 @@ def test_output_dir_is_relative_to_the_config(tmp_path):
         "formats: [jpg]\n",
         "formats: []\n",
         "usetex: maybe\n",
+        "remove_array_tilt: maybe\n",
         "dpi: high\n",
         "map: {fontt: x}\n",
         "map: {ssh_dates: [2023-04-30]}\n",
@@ -58,6 +59,25 @@ def test_invalid_config_is_an_error(tmp_path, text):
     path.write_text(text)
     with pytest.raises(figures.ConfigError):
         figures.load_config(path)
+
+
+def test_remove_array_tilt_defaults_on(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("{}\n")
+    assert figures.load_config(path).remove_array_tilt is True
+    path.write_text("remove_array_tilt: false\n")
+    assert figures.load_config(path).remove_array_tilt is False
+
+
+def test_wavefront_values_follow_remove_array_tilt(monkeypatch):
+    monkeypatch.setattr(figures, "_wavefront_values", lambda: "with tilt")
+    monkeypatch.setattr(
+        figures, "_wavefront_values_tilt_removed", lambda: "tilt removed"
+    )
+    cfg = figures.PublicationFiguresConfig()
+    assert figures._wavefront_values_for(cfg) == "tilt removed"
+    cfg = figures.PublicationFiguresConfig(remove_array_tilt=False)
+    assert figures._wavefront_values_for(cfg) == "with tilt"
 
 
 def test_missing_config_says_how_to_make_one(tmp_path):

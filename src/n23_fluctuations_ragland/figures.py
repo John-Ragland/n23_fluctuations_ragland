@@ -137,6 +137,7 @@ class PublicationFiguresConfig:
     dpi: int | None = None
     usetex: bool = True
     seed: int = 0
+    remove_array_tilt: bool = True
     map: MapConfig = field(default_factory=MapConfig)
 
     def __post_init__(self) -> None:
@@ -151,7 +152,16 @@ class PublicationFiguresConfig:
         data = _require_mapping(data, path)
         _check_keys(
             data,
-            ("output_dir", "which", "formats", "dpi", "usetex", "seed", "map"),
+            (
+                "output_dir",
+                "which",
+                "formats",
+                "dpi",
+                "usetex",
+                "seed",
+                "remove_array_tilt",
+                "map",
+            ),
             path,
         )
 
@@ -190,6 +200,11 @@ class PublicationFiguresConfig:
             msg = f"{path}.seed: expected an integer, got {seed!r}"
             raise ConfigError(msg)
 
+        remove_array_tilt = data.get("remove_array_tilt", True)
+        if not isinstance(remove_array_tilt, bool):
+            msg = f"{path}.remove_array_tilt: expected true or false, got {remove_array_tilt!r}"
+            raise ConfigError(msg)
+
         return cls(
             output_dir=output_dir,
             which=which,
@@ -197,6 +212,7 @@ class PublicationFiguresConfig:
             dpi=dpi,
             usetex=usetex,
             seed=seed,
+            remove_array_tilt=remove_array_tilt,
             map=MapConfig.from_mapping(data.get("map") or {}, f"{path}.map"),
         )
 
@@ -311,11 +327,26 @@ def _wavefront_values() -> dict[str, Any]:
     return _load_pickle("wavefront_values.pkl", "compute wavefront values")  # type: ignore[no-any-return]
 
 
+@cache
+def _wavefront_values_tilt_removed() -> dict[str, Any]:
+    return _load_pickle(  # type: ignore[no-any-return]
+        "wavefront_values_tilt_removed.pkl", "compute wavefront values"
+    )
+
+
+def _wavefront_values_for(cfg: PublicationFiguresConfig) -> dict[str, Any]:
+    """The wavefront values with the array tilt removed or not, per ``cfg.remove_array_tilt``."""
+    if cfg.remove_array_tilt:
+        return _wavefront_values_tilt_removed()
+    return _wavefront_values()
+
+
 def clear_cache() -> None:
     """Forget data loaded by previous figures (e.g. after rerunning a processing step)."""
     _receptions.cache_clear()
     _ray_run.cache_clear()
     _wavefront_values.cache_clear()
+    _wavefront_values_tilt_removed.cache_clear()
 
 
 # ---------------------------------------------------------------------------
@@ -1433,11 +1464,14 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
 
     # open observations
     m_data, _F_phi_data, _F_chi_data, F_phi_lm, F_phi_ls, F_chi_lm, F_chi_ls = (
-        tools.estimate_F_phi_chi()
+        tools.estimate_F_phi_chi(remove_array_tilt=cfg.remove_array_tilt)
     )
 
     # open ls parameters for spectra + noise model
-    results = _load_pickle("phi_chi_LS_fit.pkl", "ɸ χ GM least squares fit")
+    results = _load_pickle(
+        tools.phi_chi_LS_fit_path(cfg.remove_array_tilt).name,
+        "ɸ χ GM least squares fit",
+    )
 
     m = 2 * np.pi * np.logspace(-5, 0, 500)[None, :]  # [rad / m]
 
@@ -1629,7 +1663,7 @@ def plot_ducted_intensity_distribution(cfg: PublicationFiguresConfig) -> Figure:
     """``publication_figures/IntensityDistributions.ipynb`` (cell 7): ducted intensity / log-intensity PDFs."""
     rng = np.random.default_rng(cfg.seed)
 
-    wavefront_values = _wavefront_values()
+    wavefront_values = _wavefront_values_for(cfg)
 
     ducted_peaks = ["+7", "-7", "+6", "-6"]
 
@@ -1803,11 +1837,17 @@ def plot_ducted_intensity_distribution(cfg: PublicationFiguresConfig) -> Figure:
 
 
 def plot_ducted_vc(cfg: PublicationFiguresConfig) -> Figure:
-    """``publication_figures/Vertical_Coherence.ipynb``: observed vs. modelled vertical coherence."""
+    """``publication_figures/Vertical_Coherence.ipynb``: observed vs. modelled vertical coherence.
+
+    Cells 7, 8 and 16, but with the array tilt removed from the wavefront values (unless
+    ``remove_array_tilt: false`` in the config). The observed
+    coherence is unnormalized, with a time-correlated Bartlett variance, and is scaled by the
+    amplitude of a Gaussian fit to the nonzero lags.
+    """
     plt.rcParams["font.size"] = 8
     plt.rcParams["text.usetex"] = cfg.usetex
 
-    wavefront_values = _wavefront_values()
+    wavefront_values = _wavefront_values_for(cfg)
 
     MC = {}
     AC = {}
@@ -1815,12 +1855,38 @@ def plot_ducted_vc(cfg: PublicationFiguresConfig) -> Figure:
 
     for ray_id in wavefront_values:
         dz, MC[ray_id], MC_var[ray_id], _, _ = tools.estimate_mutual_coherence(
-            wavefront_values[ray_id], 9
+            wavefront_values[ray_id],
+            9,
+            omit_zero_lag=False,
+            norm=False,
+            dt=1,
+            t0=8 / 60,
         )
 
         _, AC[ray_id], _, _, _ = tools.estimate_mutual_coherence(
             np.abs(wavefront_values[ray_id]), 9
         )
+
+    def exp_coherence(dz, z0, A):
+        return A * np.exp(-0.5 * (dz / z0) ** 2)
+
+    def residuals(params, dz, gamma):
+        z0, A = params
+        return exp_coherence(dz, z0, A) - gamma
+
+    A0s = {}
+    z0s = {}
+
+    for ray_id in wavefront_values:
+        result = scipy.optimize.least_squares(
+            residuals,
+            x0=[100, 4e11],
+            args=(dz[1:], MC[ray_id][1:]),
+            bounds=([0, 0], [np.inf, np.inf]),
+            x_scale="jac",  # z0 ~ 1e2 and A ~ 1e11 differ by many orders of magnitude
+        )
+
+        z0s[ray_id], A0s[ray_id] = result.x
 
     latitude = 39.192499999
     Omega = 7.292115e-5  # Earth Rotation Speed [rad/s]
@@ -1865,8 +1931,8 @@ def plot_ducted_vc(cfg: PublicationFiguresConfig) -> Figure:
 
         plt.errorbar(
             dz,
-            MC[ray_id],
-            np.sqrt(MC_var[ray_id]),
+            MC[ray_id] / A0s[ray_id],
+            np.sqrt(MC_var[ray_id]) / A0s[ray_id],
             elinewidth=1,
             lw=0,
             capsize=3,
@@ -1876,24 +1942,21 @@ def plot_ducted_vc(cfg: PublicationFiguresConfig) -> Figure:
             zorder=100,
         )
 
-        plt.ylim([0, 1.1])
+        plt.ylim([-0.3, 1.4])
+        if ray_id == "+7":
+            plt.ylim([-0.5, 1.4])
 
         plt.xlabel("$\\Delta z$ [m]")
         plt.ylabel("vertical coherence")
 
+        ray_id_bbox = {
+            "facecolor": "white",
+            "edgecolor": "k",
+            "pad": 3,
+            "linewidth": 0.5,
+        }
+
         if ray_id == "+7":
-            plt.text(
-                12,
-                0.1,
-                f"Ray ID: {ray_id}, -8",
-                fontsize=9,
-                bbox={
-                    "facecolor": "white",
-                    "edgecolor": "k",
-                    "pad": 3,
-                    "linewidth": 0.5,
-                },
-            )
             # add legend# Create custom legend handles
             solid_line = mlines.Line2D(
                 [], [], color="black", linestyle="-", linewidth=1.5, label="+7"
@@ -1906,24 +1969,38 @@ def plot_ducted_vc(cfg: PublicationFiguresConfig) -> Figure:
             leg = axes[k].legend(
                 handles=[solid_line, dashed_line],
                 ncols=2,
-                loc=(0.03, 0.2),
+                loc=(0.01, 0.03),
                 framealpha=1,
                 fancybox=False,
                 edgecolor="k",
             )
             leg.get_frame().set_linewidth(0.5)  # <-- thickness here
-        else:
-            plt.text(
-                12,
-                0.1,
-                f"Ray ID: {ray_id}",
+
+            # ray ID box stacked directly above the +7 / -8 legend
+            axes[k].annotate(
+                f"Ray ID: {ray_id}, -8",
+                xy=(0, 1),
+                xycoords=leg,
+                xytext=(3, 6),
+                textcoords="offset points",
+                ha="left",
+                va="bottom",
                 fontsize=9,
-                bbox={
-                    "facecolor": "white",
-                    "edgecolor": "k",
-                    "pad": 3,
-                    "linewidth": 0.5,
-                },
+                bbox=ray_id_bbox,
+                zorder=200,  # above the errorbars (zorder=100)
+            )
+        else:
+            axes[k].annotate(
+                f"Ray ID: {ray_id}",
+                xy=(0, 0),
+                xycoords="axes fraction",
+                xytext=(6, 6),
+                textcoords="offset points",
+                ha="left",
+                va="bottom",
+                fontsize=9,
+                bbox=ray_id_bbox,
+                zorder=200,  # above the errorbars (zorder=100)
             )
 
         for pair_id in pair_ids[ray_id]:
@@ -1978,11 +2055,29 @@ def plot_ducted_vc(cfg: PublicationFiguresConfig) -> Figure:
                 )
 
         plt.grid()
-        plt.xlim([0, 300])
+        plt.xlim([-5, 300])
 
-    plt.tight_layout(pad=0.5)
+    # leave a strip at the bottom for the shared GM-strength legend
+    plt.tight_layout(pad=0.5, rect=(0, 0.055, 1, 1))
 
     fig.subplots_adjust(right=0.9)
+
+    gm_handles = [
+        mlines.Line2D([], [], color=whoi_colors[0], lw=1.5, label="$1 \\times$ GM"),
+        mlines.Line2D([], [], color=whoi_colors[1], lw=1.5, label="$2 \\times$ GM"),
+    ]
+    sp = fig.subplotpars
+    gm_leg = fig.legend(
+        handles=gm_handles,
+        ncols=2,
+        loc="lower center",
+        bbox_to_anchor=((sp.left + sp.right) / 2, 0),
+        framealpha=1,
+        fancybox=False,
+        edgecolor="k",
+    )
+    gm_leg.get_frame().set_linewidth(0.5)
+
     label_panels(axes)
     return fig
 

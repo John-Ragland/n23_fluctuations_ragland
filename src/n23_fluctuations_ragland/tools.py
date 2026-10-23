@@ -191,6 +191,38 @@ def open_array_tilt():
         return pickle.load(f)
 
 
+def wavefront_values_path(remove_array_tilt):
+    """
+    Path of the cached wavefront values, ``dataproducts/wavefront_values[_tilt_removed].pkl``.
+
+    Parameters
+    ----------
+    remove_array_tilt : bool
+        If True, the path of the wavefront values with the array tilt removed.
+    """
+    fn = (
+        "wavefront_values_tilt_removed.pkl"
+        if remove_array_tilt
+        else "wavefront_values.pkl"
+    )
+    return get_data_dir() / "dataproducts" / fn
+
+
+def phi_chi_LS_fit_path(remove_array_tilt):
+    """
+    Path of the cached ɸ χ GM least squares fit, ``dataproducts/phi_chi_LS_fit[_tilt_removed].pkl``.
+
+    Parameters
+    ----------
+    remove_array_tilt : bool
+        If True, the path of the fit to the wavefront values with the array tilt removed.
+    """
+    fn = (
+        "phi_chi_LS_fit_tilt_removed.pkl" if remove_array_tilt else "phi_chi_LS_fit.pkl"
+    )
+    return get_data_dir() / "dataproducts" / fn
+
+
 def get_wavefront_values(dss, remove_array_tilt=False, half_window=1.0):
     """
     Unstacked beamformer output of the lower array at each ray's arrival time and angle.
@@ -2007,6 +2039,32 @@ def compute_mean_pulse():
     )
 
 
+def _jackknife_log_std(F):
+    """
+    Jackknife estimate of the standard deviation of the log-mean, mean(log10(F)), over transmissions.
+
+    Parameters
+    ----------
+    F : np.array
+        power spectral density, shape (n_transmissions, n_wavenumbers)
+
+    Returns
+    -------
+    mean_jk : np.array
+        leave-one-out means of log10(F), shape (n_transmissions, n_wavenumbers)
+    ls : np.array
+        jackknife log standard deviation of the log-mean as a multiplicative factor, 10 ** sigma_jk,
+        shape (n_wavenumbers,)
+    """
+    M = F.shape[0]
+    log_F = np.log10(F)
+    # leave out one transmission at a time
+    mean_jk = np.stack([np.mean(np.delete(log_F, j, axis=0), axis=0) for j in range(M)])
+    # jackknife variance
+    var_jk = (M - 1) / M * np.sum((mean_jk - np.mean(mean_jk, axis=0)) ** 2, axis=0)
+    return mean_jk, 10 ** np.sqrt(var_jk)
+
+
 def estimate_F_phi_chi(remove_array_tilt: bool = False):
     r"""
     Estimate observed $F_{\phi}$ and $F_{\chi}$ for the acoustic receptions.
@@ -2028,19 +2086,16 @@ def estimate_F_phi_chi(remove_array_tilt: bool = False):
     F_phi_lm : dict
         dictionary containing arrays of log-mean phase power spectral density, $F_\\phi$ [rad m]
     F_phi_ls : dict
-        dictionary containing arrays of log-standard deviation of phase power spectral density, $F_\\phi$ [rad m]
+        dictionary containing arrays of jackknife log-standard deviation of the log-mean phase power spectral
+        density, $F_\\phi$, as a multiplicative factor
     F_chi_lm : dict
         dictionary containing arrays of log-mean log-amplitude power spectral density, $F_\\chi$ [rad m]
     F_chi_ls : dict
-        dictionary containing arrays of log-standard deviation of log-amplitude power spectral density, $F_\\chi$ [rad m]
+        dictionary containing arrays of jackknife log-standard deviation of the log-mean log-amplitude power
+        spectral density, $F_\\chi$, as a multiplicative factor
     """
 
-    if remove_array_tilt:
-        fn = get_data_dir() / "dataproducts" / "wavefront_values_tilt_removed.pkl"
-    else:
-        fn = get_data_dir() / "dataproducts" / "wavefront_values.pkl"
-
-    with fn.open("rb") as f:
+    with wavefront_values_path(remove_array_tilt).open("rb") as f:
         wavefront_values = pickle.load(f)
 
     ray_ids = ["+7", "-7", "-6", "+6"]
@@ -2049,8 +2104,10 @@ def estimate_F_phi_chi(remove_array_tilt: bool = False):
     F_phi_data = {}
 
     F_chi_lm = {}
+    F_chi_ls_jk = {}
     F_chi_ls = {}
     F_phi_lm = {}
+    F_phi_ls_jk = {}
     F_phi_ls = {}
 
     for ray_id in ray_ids:
@@ -2076,10 +2133,16 @@ def estimate_F_phi_chi(remove_array_tilt: bool = False):
 
         # Take mean and standard deviation in log space
         F_chi_lm[ray_id] = 10 ** np.mean(np.log10(F_chi_data[ray_id]), axis=0)
-        F_chi_ls[ray_id] = 10 ** np.std(np.log10(F_chi_data[ray_id]), axis=0)
+
+        # Compute the jacknife log standard deviation of the log-mean of F_chi_data
+        F_chi_ls_jk[ray_id], F_chi_ls[ray_id] = _jackknife_log_std(F_chi_data[ray_id])
+        # F_chi_ls[ray_id] = 10 ** np.std(np.log10(F_chi_data[ray_id]), axis=0)
 
         F_phi_lm[ray_id] = 10 ** np.mean(np.log10(F_phi_data[ray_id]), axis=0)
-        F_phi_ls[ray_id] = 10 ** np.std(np.log10(F_phi_data[ray_id]), axis=0)
+
+        # compute the jacknife log standard deviation of the log-mean of F_phi_data
+        F_phi_ls_jk[ray_id], F_phi_ls[ray_id] = _jackknife_log_std(F_phi_data[ray_id])
+        # F_phi_ls[ray_id] = 10 ** np.std(np.log10(F_phi_data[ray_id]), axis=0)
 
     return m_data, F_phi_data, F_chi_data, F_phi_lm, F_phi_ls, F_chi_lm, F_chi_ls
 

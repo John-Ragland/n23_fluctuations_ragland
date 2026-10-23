@@ -6,6 +6,8 @@ heavy scientific computation.
 
 from __future__ import annotations
 
+import pytest
+
 
 def test_cli_imports():
     """All CLI functions can be imported without error."""
@@ -177,7 +179,7 @@ def test_estimate_F_phi_chi_uses_get_data_dir():
         "estimate_F_phi_chi must use get_data_dir() instead of "
         "os.environ['NESCAFE23_DATADIR'] to avoid missing path separator"
     )
-    assert "get_data_dir" in source
+    assert "wavefront_values_path" in source
 
 
 def test_fit_coherence_length_recovers_gaussian():
@@ -256,11 +258,66 @@ def test_wavefront_values_paths_per_mode(tmp_path, monkeypatch):
     """Tilt-removed wavefront values are written to their own file."""
     import n23_fluctuations_ragland.cli as cli_mod
 
-    monkeypatch.setattr(cli_mod, "get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(cli_mod.tools, "get_data_dir", lambda: tmp_path)
     assert cli_mod._wavefront_values_path(False).name == "wavefront_values.pkl"
     assert (
         cli_mod._wavefront_values_path(True).name == "wavefront_values_tilt_removed.pkl"
     )
+
+
+def test_phi_chi_LS_fit_paths_per_mode(tmp_path, monkeypatch):
+    """Tilt-removed ɸ χ fits are written to their own file."""
+    from n23_fluctuations_ragland import tools
+
+    monkeypatch.setattr(tools, "get_data_dir", lambda: tmp_path)
+    assert (
+        tools.phi_chi_LS_fit_path(False)
+        == tmp_path / "dataproducts" / "phi_chi_LS_fit.pkl"
+    )
+    assert (
+        tools.phi_chi_LS_fit_path(True)
+        == tmp_path / "dataproducts" / "phi_chi_LS_fit_tilt_removed.pkl"
+    )
+
+
+@pytest.mark.parametrize("remove_array_tilt", [False, True])
+def test_phi_chi_LS_fit_uses_matching_wavefront_values(
+    tmp_path, monkeypatch, remove_array_tilt
+):
+    """The fit estimates the spectra in the requested mode and saves to that mode's file."""
+    import pickle
+
+    import n23_fluctuations_ragland.cli as cli_mod
+
+    (tmp_path / "dataproducts").mkdir()
+    monkeypatch.setattr(cli_mod.tools, "get_data_dir", lambda: tmp_path)
+
+    calls = []
+
+    def fake_estimate(remove_array_tilt=False):
+        calls.append(remove_array_tilt)
+        return "m", None, None, "phi_lm", "phi_ls", "chi_lm", "chi_ls"
+
+    monkeypatch.setattr(cli_mod.tools, "estimate_F_phi_chi", fake_estimate)
+    monkeypatch.setattr(cli_mod.tools, "fit_F_phi_chis", lambda *args: {"args": args})
+
+    cli_mod.phi_chi_LS_fit(remove_array_tilt=remove_array_tilt, force_overwrite=True)
+
+    assert calls == [remove_array_tilt]
+    with cli_mod.tools.phi_chi_LS_fit_path(remove_array_tilt).open("rb") as f:
+        assert pickle.load(f) == {"args": ("m", "phi_lm", "chi_lm", "phi_ls", "chi_ls")}
+    assert not cli_mod.tools.phi_chi_LS_fit_path(not remove_array_tilt).exists()
+
+
+def test_run_all_processing_fits_both_modes():
+    """run_all_processing fits the ɸ χ spectra with and without the array tilt removed."""
+    import inspect
+
+    from n23_fluctuations_ragland import cli
+
+    source = inspect.getsource(cli.run_all_processing)
+    assert source.count("phi_chi_LS_fit,") == 2
+    assert source.count('{"remove_array_tilt": True}') == 2
 
 
 def test_peak_locations_saves_upper_array():

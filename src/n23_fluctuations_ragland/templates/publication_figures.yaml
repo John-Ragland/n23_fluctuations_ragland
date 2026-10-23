@@ -35,6 +35,11 @@ usetex: true
 # Seed for the random vertical jitter of the scatter in Ducted_Intensity_Distribution.
 seed: 0
 
+# Use the wavefront values with the lower-array tilt removed (wavefront_values_tilt_removed.pkl,
+# phi_chi_LS_fit_tilt_removed.pkl) in F_phi_chi_ducted, Ducted_Intensity_Distribution and
+# Ducted_VC. false = the per-transmission picked angles (wavefront_values.pkl, phi_chi_LS_fit.pkl).
+remove_array_tilt: true
+
 map:
   # TrueType font for the map. null -> $NESCAFE23_DATADIR/fonts/RedHatDisplay-Medium.ttf
   font: null
