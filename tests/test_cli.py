@@ -26,6 +26,7 @@ def test_cli_imports():
         "create_publication_figures_config",
         "generate_publication_figures",
         "coherence_lengths",
+        "independence_test",
     ]:
         assert hasattr(cli, name), f"cli.{name} is missing"
 
@@ -44,6 +45,11 @@ def test_tools_has_required_functions():
         "estimate_F_phi_chi",
         "fit_F_phi_chis",
         "compute_filtered_fctd_grid",
+        "fit_vertical_coherence",
+        "jackknife_vertical_coherence",
+        "transmission_independence_test",
+        "independence_test_F_phi_chi",
+        "independence_test_vertical_coherence",
         "estimate_observed_coherence_lengths",
         "compute_theoretical_coherence_lengths",
         "coherence_lengths_latex_table",
@@ -213,6 +219,25 @@ def test_coherence_lengths_latex_table():
     assert rows[1] == "$+7$ & -- & 50.0 & -- & 120.0 & -- \\\\"
     assert rows[2] == "$-6$ & 0 & 100.0 & 90.0 & 60.0 & 30.0 \\\\"
     assert rows[3].startswith("$-6$ & 1 & -- & 95.0")
+
+    observed["+7"]["z0_std"] = 4.25
+    table = tools.coherence_lengths_latex_table(observed, theory)
+    rows = [line for line in table.splitlines() if line.startswith("$")]
+    assert rows[1] == "$+7$ & -- & 50.0 $\\pm$ 4.2 & -- & 120.0 & -- \\\\"
+
+
+def test_fit_vertical_coherence_recovers_gaussian():
+    """The fit to the unnormalized coherence ignores the noise-biased zero lag."""
+    import numpy as np
+
+    from n23_fluctuations_ragland import tools
+
+    dz = np.arange(0, 32 * 9.0, 9.0)
+    MC = tools.gaussian_coherence_model(dz, 4e11, 120.0)
+    MC[0] *= 1.5  # noise at lag 0
+    A0, z0 = tools.fit_vertical_coherence(dz, MC)
+    assert np.isclose(A0, 4e11)
+    assert np.isclose(z0, 120.0)
 
 
 def test_estimate_array_tilt_recovers_tilt():
@@ -393,3 +418,143 @@ def test_mutual_coherence_variance_monte_carlo():
             if norm:
                 assert np.allclose(predicted[0], 0)
             np.testing.assert_allclose(predicted[check], empirical[check], rtol=0.25)
+
+
+def test_jackknife_vertical_coherence():
+    """Leave-one-transmission-out jackknife of the vertical coherence and its Gaussian fit."""
+    import numpy as np
+
+    from n23_fluctuations_ragland import tools
+
+    rng = np.random.default_rng(0)
+    M, N = 23, 32
+    # unit-variance field with z0 = 10 samples, scaled to the ~4e11 power of the wavefront values
+    X = 6e5 * _simulate_snapshots(rng, M, N, z0=10.0, t0=1e-6, noise_std=0.3)
+
+    vc = tools.jackknife_vertical_coherence(X, 9.0)
+
+    assert vc["lags"].shape == vc["MC"].shape == vc["VC"].shape == vc["VC_var"].shape
+    assert vc["MC_jk"].shape == (M, N)
+    assert vc["A0_jk"].shape == vc["z0_jk"].shape == (M,)
+    np.testing.assert_allclose(vc["VC"], vc["MC"] / vc["A0"])
+    assert np.isclose(vc["z0"], 90.0, rtol=0.3)
+    assert np.all(vc["VC_var"] >= 0)
+    assert np.isfinite(vc["z0_var"])
+    assert vc["z0_var"] > 0
+
+    # MC is a mean over transmissions, for which the jackknife variance is exactly var / M
+    per_transmission = np.array(
+        [
+            tools.estimate_mutual_coherence(
+                X[k : k + 1], 9.0, omit_zero_lag=False, norm=False
+            )[1]
+            for k in range(M)
+        ]
+    )
+    np.testing.assert_allclose(
+        tools._jackknife_var(vc["MC_jk"]),
+        np.var(per_transmission, axis=0, ddof=1) / M,
+    )
+
+
+def test_observed_coherence_lengths_report_jackknife_std():
+    """The observed z0 comes from the jackknifed fit, with its standard deviation."""
+    import numpy as np
+
+    from n23_fluctuations_ragland import tools
+
+    rng = np.random.default_rng(1)
+    X = 6e5 * _simulate_snapshots(rng, 23, 32, z0=10.0, t0=1e-6, noise_std=0.3)
+
+    observed = tools.estimate_observed_coherence_lengths({"-6": X})
+    vc = tools.jackknife_vertical_coherence(X, 9.0)
+    assert observed["-6"]["z0"] == vc["z0"]
+    assert np.isclose(observed["-6"]["z0_std"], np.sqrt(vc["z0_var"]))
+
+
+def test_log_periodogram_bias_and_dof():
+    """Bias of log10 of a chi-square periodogram bin, and the 1-dof Nyquist bin of an even record."""
+    import numpy as np
+
+    from n23_fluctuations_ragland import tools
+
+    assert np.isclose(tools._log_periodogram_bias(2), -np.euler_gamma / np.log(10))
+    assert np.isclose(
+        tools._log_periodogram_bias(1), -(np.euler_gamma + np.log(2)) / np.log(10)
+    )
+    np.testing.assert_array_equal(tools._periodogram_dof(28, 14), [2.0] * 13 + [1.0])
+    np.testing.assert_array_equal(tools._periodogram_dof(27, 13), [2.0] * 13)
+
+
+def test_jackknife_log_mean_is_unbiased_for_white_noise():
+    """The corrected log-mean recovers a white spectrum; the uncorrected one is low by exp(-gamma)."""
+    import numpy as np
+
+    from n23_fluctuations_ragland import tools
+
+    rng = np.random.default_rng(0)
+    M, N, sigma, fs = 23, 28, 2.0, 1 / 9
+    true_level = 2 * sigma**2 / fs  # one-sided PSD of white noise
+
+    lms, raw = [], []
+    for _ in range(400):
+        x = sigma * rng.standard_normal((M, N))
+        _, F, dof = tools._one_sided_periodogram(x, fs)
+        lm, ls = tools._jackknife_log_mean(F, dof)
+        lms.append(np.log10(lm))
+        raw.append(np.mean(np.log10(F), axis=0))
+        # the jackknife standard error of a mean is the standard error
+        np.testing.assert_allclose(
+            np.log10(ls), np.std(np.log10(F), axis=0, ddof=1) / np.sqrt(M)
+        )
+
+    # every bin, including the 1-dof Nyquist bin, estimates the one-sided level
+    true = np.log10(np.full(14, true_level))
+    np.testing.assert_allclose(np.mean(lms, axis=0), true, atol=0.02)
+    np.testing.assert_allclose(
+        np.mean(raw, axis=0)[:-1] - true[:-1], -np.euler_gamma / np.log(10), atol=0.02
+    )
+
+
+def test_transmission_independence_test():
+    """Uncorrelated rows sit at the null; strongly autocorrelated rows are detected."""
+    import numpy as np
+
+    from n23_fluctuations_ragland import tools
+
+    rng = np.random.default_rng(0)
+    M, K = 23, 20
+
+    iid = tools.transmission_independence_test(rng.standard_normal((M, K)), n_perm=500)
+    assert iid["r1"].shape == (K,)
+    assert np.isclose(iid["band"], 2 / np.sqrt(M))
+    assert np.isclose(iid["null_mean"], -1 / M)
+    assert abs(iid["mean_r1"] - iid["null_mean"]) < 0.15
+    assert iid["p"] > 0.05
+
+    ar = np.zeros((M, K))
+    ar[0] = rng.standard_normal(K)
+    for k in range(1, M):
+        ar[k] = 0.8 * ar[k - 1] + rng.standard_normal(K)
+    corr = tools.transmission_independence_test(ar, n_perm=500)
+    assert corr["mean_r1"] > 0.4
+    assert corr["p"] < 0.01
+    assert corr["n_outside"] > K // 2
+
+
+def test_independence_test_vertical_coherence_shapes():
+    """One column per lag up to max_lag for every ducted ray."""
+    import numpy as np
+
+    from n23_fluctuations_ragland import tools
+
+    rng = np.random.default_rng(0)
+    wavefront_values = {
+        ray_id: _simulate_snapshots(rng, 23, 28, z0=10.0, t0=1e-6, noise_std=0.3)
+        for ray_id in tools.DUCTED_RAY_IDS
+    }
+    result = tools.independence_test_vertical_coherence(
+        wavefront_values, dz=9.0, max_lag=180.0, n_perm=100
+    )
+    assert result["pooled"]["r1"].shape == (4 * 21,)
+    assert set(result["per_ray"]) == set(tools.DUCTED_RAY_IDS)

@@ -1334,8 +1334,10 @@ def plot_phase_structure_integrand(cfg: PublicationFiguresConfig) -> Figure:
         zeta1[ray_id] = []
 
         for rv in ray_vars[ray_id]:
+            # the integrand is per ray sample; divide by the sample spacing to get dD/dr [rad^2/km]
             integrand[ray_id].append(
                 tools.compute_phase_structure_integrand(rv, delta_zr)
+                / np.gradient(rv["rs"] / 1000)[:, None]
             )
             ray_z[ray_id].append(rv["zs"])
             zeta1[ray_id].append(rv["RT_zeta_1"])
@@ -1374,8 +1376,8 @@ def plot_phase_structure_integrand(cfg: PublicationFiguresConfig) -> Figure:
     plt.title("")
 
     plt.xlabel("range [km]")
-    plt.title("$D(\\Delta z)$ integrand", loc="left")
-    plt.ylabel("")
+    plt.title("$D(\\Delta z = 200 \\ \\mathrm{m})$ integrand", loc="left", pad=2)
+    plt.ylabel("[rad$^2$/km]")
 
     plt.sca(axes[0])
 
@@ -1405,13 +1407,7 @@ def plot_phase_structure_integrand(cfg: PublicationFiguresConfig) -> Figure:
     plt.ylim([3000, 000])
     plt.ylabel("depth [m]")
 
-    leg = plt.legend(ncols=4, framealpha=1)
-
-    # change the line width for the legend
-    for line in leg.get_lines():
-        line.set_linewidth(4.0)
-
-    plt.title("Ray paths", loc="left")
+    plt.title("Ray paths", loc="left", pad=2)
     axes[0].set_xticklabels([])
     plt.sca(axes[1])
 
@@ -1438,18 +1434,38 @@ def plot_phase_structure_integrand(cfg: PublicationFiguresConfig) -> Figure:
                 alpha=0.85,
             )
 
-    plt.ylabel("ray separation [m]")
-    plt.title("Ray separation $\\xi_1$", loc="left")
+    plt.ylabel("$\\xi_1$ [m]")
+    plt.title("Forward ray tube function $\\xi_1(r)$", loc="left", pad=2)
     axes[1].set_xticklabels([])
 
-    plt.tight_layout(pad=0)
+    # leave a strip at the bottom for the shared ray legend
+    plt.tight_layout(pad=0, rect=(0, 0.075, 1, 1))
+
+    sp = fig.subplotpars
+    leg = fig.legend(
+        *axes[0].get_legend_handles_labels(),
+        ncols=4,
+        loc="lower center",
+        bbox_to_anchor=((sp.left + sp.right) / 2, 0),
+        framealpha=1,
+    )
+
+    # change the line width for the legend
+    for line in leg.get_lines():
+        line.set_linewidth(4.0)
+
     # the xi_1 curves and the integrand spikes reach the upper right
     label_panels(axes, "upper left")
     return fig
 
 
 def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
-    """``publication_figures/Phi_Chi_Spectra.ipynb``: observed vs. GM-model phase/log-amplitude spectra."""
+    """``publication_figures/Phi_Chi_Spectra.ipynb``: observed vs. GM-model phase/log-amplitude spectra.
+
+    The observed spectra are the bias-corrected log-means of the per-transmission periodograms, and the
+    shaded bands are ± their leave-one-transmission-out jackknife standard error
+    (`tools.estimate_F_phi_chi`).
+    """
     whoi_colors = ["#00B7BD", "#EE5340"]
 
     plt.rcParams.update({"font.size": 8})
@@ -1839,54 +1855,24 @@ def plot_ducted_intensity_distribution(cfg: PublicationFiguresConfig) -> Figure:
 def plot_ducted_vc(cfg: PublicationFiguresConfig) -> Figure:
     """``publication_figures/Vertical_Coherence.ipynb``: observed vs. modelled vertical coherence.
 
-    Cells 7, 8 and 16, but with the array tilt removed from the wavefront values (unless
-    ``remove_array_tilt: false`` in the config). The observed
-    coherence is unnormalized, with a time-correlated Bartlett variance, and is scaled by the
-    amplitude of a Gaussian fit to the nonzero lags.
+    Cells 7, 8, 9 and 15, but with the array tilt removed from the wavefront values (unless
+    ``remove_array_tilt: false`` in the config). The observed coherence is the unnormalized
+    mutual coherence scaled by the amplitude of a Gaussian fit to the nonzero lags
+    (`tools.jackknife_vertical_coherence`). The error bars are the leave-one-transmission-out
+    jackknife of that ratio, refitting the amplitude each time. The notebook instead divides
+    the jackknife variance of the unnormalized coherence by the full-data amplitude.
     """
     plt.rcParams["font.size"] = 8
     plt.rcParams["text.usetex"] = cfg.usetex
 
     wavefront_values = _wavefront_values_for(cfg)
 
-    MC = {}
-    AC = {}
-    MC_var = {}
+    ray_ids = ["+7", "-7", "+6", "-6"]
 
-    for ray_id in wavefront_values:
-        dz, MC[ray_id], MC_var[ray_id], _, _ = tools.estimate_mutual_coherence(
-            wavefront_values[ray_id],
-            9,
-            omit_zero_lag=False,
-            norm=False,
-            dt=1,
-            t0=8 / 60,
-        )
-
-        _, AC[ray_id], _, _, _ = tools.estimate_mutual_coherence(
-            np.abs(wavefront_values[ray_id]), 9
-        )
-
-    def exp_coherence(dz, z0, A):
-        return A * np.exp(-0.5 * (dz / z0) ** 2)
-
-    def residuals(params, dz, gamma):
-        z0, A = params
-        return exp_coherence(dz, z0, A) - gamma
-
-    A0s = {}
-    z0s = {}
-
-    for ray_id in wavefront_values:
-        result = scipy.optimize.least_squares(
-            residuals,
-            x0=[100, 4e11],
-            args=(dz[1:], MC[ray_id][1:]),
-            bounds=([0, 0], [np.inf, np.inf]),
-            x_scale="jac",  # z0 ~ 1e2 and A ~ 1e11 differ by many orders of magnitude
-        )
-
-        z0s[ray_id], A0s[ray_id] = result.x
+    vc = {
+        ray_id: tools.jackknife_vertical_coherence(wavefront_values[ray_id], 9)
+        for ray_id in ray_ids
+    }
 
     latitude = 39.192499999
     Omega = 7.292115e-5  # Earth Rotation Speed [rad/s]
@@ -1924,15 +1910,13 @@ def plot_ducted_vc(cfg: PublicationFiguresConfig) -> Figure:
     fig, axes = plt.subplots(2, 2, figsize=(6.67, 4))
     axes = axes.flatten()
 
-    ray_ids = ["+7", "-7", "+6", "-6"]
-
     for k, ray_id in enumerate(ray_ids):
         plt.sca(axes[k])
 
         plt.errorbar(
-            dz,
-            MC[ray_id] / A0s[ray_id],
-            np.sqrt(MC_var[ray_id]) / A0s[ray_id],
+            vc[ray_id]["lags"],
+            vc[ray_id]["VC"],
+            np.sqrt(vc[ray_id]["VC_var"]),
             elinewidth=1,
             lw=0,
             capsize=3,

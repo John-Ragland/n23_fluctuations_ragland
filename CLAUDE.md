@@ -39,13 +39,52 @@ uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dash
     `open_array_tilt`, `array_tilt.pkl`) instead of the per-transmission picked angle. The tilt is
     the mean over rays of the demeaned picked angles. It omits `ARRAY_TILT_OMIT`, the rays with the
     fewest good QC flags.
+  - `jackknife_vertical_coherence(X, dz)` is the observed vertical coherence used by `Ducted_VC`
+    and the CLI coherence-lengths table. It takes the unnormalized mutual coherence, divides it by the
+    amplitude A0 of a Gaussian fit to the nonzero lags (`fit_vertical_coherence`), and adds
+    leave-one-transmission-out jackknife variances. The error bars jackknife the *ratio* MC_k/A0_k,
+    refitting A0 in each sample. That deliberately differs from `Vertical_Coherence.ipynb` cell 9,
+    which divides Var[MC_k] by the full-data A0². Because MC_k and A0_k share the per-transmission
+    intensity fluctuation, the ratio's bars are several times smaller at short lags.
+  - `estimate_F_phi_chi` returns `F_*_lm`, the log-mean of the per-transmission periodograms with its
+    bias removed (`_jackknife_log_mean`). A raw log-mean of χ²₂ bins is low by γ/ln10 = 0.251
+    decades (×0.56), and by 0.552 decades at the 1-dof Nyquist bin of the 28-phone record. It also
+    returns `F_*_ls`, the leave-one-transmission-out jackknife standard error of that mean (Efron &
+    Tibshirani 1993, Ch. 11), as a multiplicative factor. The fit weights (`fit_F_phi_chis`) and the
+    `F_phi_chi_ducted` bands both use it. The bands are the SE, not the single-periodogram spread,
+    because the spread is ~0.56 decades everywhere and only reflects χ²₂ sampling noise. **`phi_chi_LS_fit*.pkl`
+    files made before the bias correction are biased low** and must be regenerated with
+    `force_overwrite=True`.
+  - `estimate_F_phi_chi` tapers each depth record with a periodic Hann window scaled to unit mean square
+    (`_hann_window`) after the mean removal and the zero-fill of elements 4, 5, 20 (`hann=False` gives the
+    old untapered periodogram). Untapered, the very red phase spectrum leaks into every bin and sets a
+    floor near 1–3 rad² m that hides the spectrum at high wavenumbers. The taper keeps white-noise levels
+    (`tests/test_tools.py`), but down-weights variance at scales longer than the array, which sits at the
+    array ends, so total power drops (to about 45–70% for ducted φ). The fit still compares against the
+    analytic model, not the model passed through the same taper; that was a deliberate choice, because with
+    the taper the two differ little in the resolved bins. Fits made before 2026-10-23 used the untapered
+    spectra.
+  - `compute_F_phi_chi` (Colosi 2016 Eq. 6.52) takes m in rad/m but returns a one-sided density **per
+    cycle/m**: Eq. 6.52 is a density per rad/m, so it is multiplied by the 2π Jacobian to match the 9 m
+    periodograms of `estimate_F_phi_chi` and Colosi's per-cpm figures. `phi_chi_spectrum_model`,
+    `fit_F_phi_chis` and `F_phi_chi_ducted` inherit that, so only the x-axis is converted (`m / 2π`) when
+    plotting. Before 2026-10-23 the Jacobian was missing: the WFT curves were 2π too low and the fitted GM
+    levels about 2π too high. `tests/test_tools.py` pins the convention. The spectra (Eq. 6.26/6.52, local
+    straight-ray, no wavenumber dilation) and `compute_phase_structure_function` (Eq. 7.50, with the ξ₁
+    dilation) are different approximations, so they need not agree on one GM level.
+  - `transmission_independence_test(samples)` supports the jackknife's assumption that the hourly
+    transmissions are independent. It compares the lag-1 autocorrelation of per-transmission estimates
+    with ±2/√M and gives a permutation p-value. `independence_test_F_phi_chi` (log-periodograms) and
+    `independence_test_vertical_coherence` (lagged products R_k(Δz), Δz ≤ 180 m) apply it to the ducted
+    rays. The CLI's "transmission independence test" entry prints both. The test assumes rows are in time
+    order: `open_receptions` globs `dm<day><hour>1000.mat`, and those names sort chronologically at 1 h spacing.
   - `EIG_INDEXS` — a large hand-picked dict mapping ray IDs to forward/backward eigenray pair indices, built
     via `notebooks/auxiliary/Ray_forward_backward_matching.ipynb`. **Don't regenerate this programmatically**
     without understanding that provenance — it encodes manual matching decisions, not a derivable rule.
 - **`src/n23_fluctuations_ragland/cli.py`** — `main()`: a `questionary` menu wrapping the processing pipeline
   (arrival time offset, peak locations, array tilt, wavefront values, mean pulse, ray computation, source geometry sweep,
   φ/χ least-squares fit), each step decorated with `check_output_exists` to skip/overwrite cached outputs.
-  Wavefront values, the φ/χ fit and the coherence-lengths table each ask "Remove array tilt?"
+  Wavefront values, the φ/χ fit, the coherence-lengths table and the independence test each ask "Remove array tilt?"
   (default yes) and read/write the `*_tilt_removed.pkl` products when it's yes; `run_all_processing()`
   runs both modes of the wavefront values and the fit.
   `run_all_processing()` chains all steps; `serve_panel_apps()` shells out to `panel serve` on `panel_apps/`.

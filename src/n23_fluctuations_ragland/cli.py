@@ -84,6 +84,7 @@ def main():
             "source geometry sweep",
             "ɸ χ GM least squares fit",
             "coherence lengths (observed vs. GM)",
+            "transmission independence test",
             "create publication figures config",
             "generate publication figures",
             "exit",
@@ -110,6 +111,8 @@ def main():
         phi_chi_LS_fit()
     elif choice == "coherence lengths (observed vs. GM)":
         coherence_lengths()
+    elif choice == "transmission independence test":
+        independence_test()
     elif choice == "create publication figures config":
         create_publication_figures_config()
     elif choice == "generate publication figures":
@@ -539,22 +542,17 @@ def coherence_lengths(remove_array_tilt=None):
     Print a LaTeX table of the observed (Gaussian fit to the mutual coherence) and theoretical (1GM path
     integral) vertical coherence lengths and coherence times for each ray.
 
+    The observed z0 is fitted to the nonzero lags of the unnormalized mutual coherence, as in the
+    Ducted_VC figure, and reported ± its leave-one-transmission-out jackknife standard deviation
+    (`tools.jackknife_vertical_coherence`).
+
     The user is asked whether to use the wavefront values with the array tilt removed when
     `remove_array_tilt` is None.
     """
     if remove_array_tilt is None:
         remove_array_tilt = _ask_remove_array_tilt()
 
-    wavefront_values_path = tools.wavefront_values_path(remove_array_tilt)
-    if not wavefront_values_path.exists():
-        mode = " (array tilt removed)" if remove_array_tilt else ""
-        raise FileNotFoundError(
-            f"Wavefront values{mode} not found at {wavefront_values_path}. "
-            "Please run 'compute wavefront values' first."
-        )
-
-    with wavefront_values_path.open("rb") as f:
-        wavefront_values = pickle.load(f)
+    wavefront_values = _load_wavefront_values(remove_array_tilt)
 
     print("Estimating observed coherence lengths...")
     observed = tools.estimate_observed_coherence_lengths(wavefront_values)
@@ -566,6 +564,65 @@ def coherence_lengths(remove_array_tilt=None):
     print(table)
     print("=" * 60)
     return table
+
+
+def _load_wavefront_values(remove_array_tilt):
+    wavefront_values_path = tools.wavefront_values_path(remove_array_tilt)
+    if not wavefront_values_path.exists():
+        mode = " (array tilt removed)" if remove_array_tilt else ""
+        raise FileNotFoundError(
+            f"Wavefront values{mode} not found at {wavefront_values_path}. "
+            "Please run 'compute wavefront values' first."
+        )
+    with wavefront_values_path.open("rb") as f:
+        return pickle.load(f)
+
+
+def independence_test(remove_array_tilt=None):
+    """
+    Print the transmission independence test (lag-1 autocorrelation of the per-transmission estimates over the
+    hourly transmissions) for the ɸ and χ spectra and for the vertical coherence, the assumption of their
+    jackknife error bars.
+
+    The user is asked whether to use the wavefront values with the array tilt removed when
+    `remove_array_tilt` is None.
+    """
+    if remove_array_tilt is None:
+        remove_array_tilt = _ask_remove_array_tilt()
+
+    wavefront_values = _load_wavefront_values(remove_array_tilt)
+
+    print("Testing the ɸ and χ spectra...")
+    F_results = tools.independence_test_F_phi_chi(remove_array_tilt=remove_array_tilt)
+    print("Testing the vertical coherence...")
+    vc_result = tools.independence_test_vertical_coherence(wavefront_values)
+
+    sections = [
+        ("F_phi: log10 periodogram, all wavenumbers", F_results["phi"]),
+        ("F_chi: log10 periodogram, all wavenumbers", F_results["chi"]),
+        ("vertical coherence: R_k(dz), dz <= 180 m", vc_result),
+    ]
+    lines = []
+    for title, result in sections:
+        pooled = result["pooled"]
+        per_ray = ", ".join(
+            f"{ray_id} {r1:+.2f}" for ray_id, r1 in result["per_ray"].items()
+        )
+        lines += [
+            title,
+            f"  mean lag-1 autocorrelation per ray: {per_ray}",
+            (
+                f"  pooled mean r1 = {pooled['mean_r1']:+.3f} (uncorrelated: {pooled['null_mean']:+.3f}), "
+                f"|r1| > {pooled['band']:.2f}: {pooled['n_outside']}/{len(pooled['r1'])}, "
+                f"permutation p = {pooled['p']:.2f}"
+            ),
+        ]
+
+    report = "\n".join(lines)
+    print("=" * 60)
+    print(report)
+    print("=" * 60)
+    return report
 
 
 def create_publication_figures_config():

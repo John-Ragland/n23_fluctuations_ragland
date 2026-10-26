@@ -1043,6 +1043,11 @@ def compute_F_phi_chi(
     r"""
     Given the dictionary of ray variables, computed with `compute_ray_path_variables`, compute power spectral density of phase and log-amplitude ($F_\\phi$ and $F_\\chi$)
 
+    The spectra are Colosi (2016) Eq. 6.52, which is a one-sided density per unit wavenumber in rad/m
+    (m = π j N / N0B, j ≥ 1). They are returned as a one-sided density per cycle/m, i.e. multiplied by the
+    Jacobian 2π, so they can be compared directly with the periodograms of `estimate_F_phi_chi` (sampled at
+    9 m, so per cycle/m) and with the spectra plotted per cpm in Colosi (2016), Figs. 6.1 and 6.10.
+
     Parameters
     ----------
     rv : dict
@@ -1059,9 +1064,11 @@ def compute_F_phi_chi(
     Returns
     -------
     F_phi : np.array
-        array of phase power spectral density, $F_\\phi$ [rad m], at each vertical wavenumber in m
+        array of one-sided phase power spectral density per cycle/m, $F_\\phi$ [rad$^2$ m], at each vertical
+        wavenumber in m
     F_chi : np.array
-        array of log-amplitude power spectral density, $F_\\chi$ [rad m] at each vertical wavenumber in m
+        array of one-sided log-amplitude power spectral density per cycle/m, $F_\\chi$ [m], at each vertical
+        wavenumber in m
     """
 
     wc = 2 * np.pi * fc
@@ -1116,6 +1123,10 @@ def compute_F_phi_chi(
     F_chi_integrand[np.isnan(F_chi_integrand)] = 0
     F_chi = scipy.integrate.simpson(F_chi_integrand, axis=0)
 
+    # Eq. 6.52 is a density per rad/m; convert to a density per cycle/m
+    F_phi = 2 * np.pi * F_phi
+    F_chi = 2 * np.pi * F_chi
+
     valid_mask = (m[0] / (2 * np.pi) > rv["m_lo_max"]) & (
         m[0] / (2 * np.pi) < rv["m_hi_max"]
     )
@@ -1141,9 +1152,9 @@ def compute_F_phi_chi_n23(GM_energy):
     m : np.array
         array of vertical wavenumbers [rad/m] at which F_phi and F_chi are computed
     F_phis : dict
-        dictionary of phase power spectral densities for each ray_id.
+        dictionary of phase power spectral densities per cycle/m for each ray_id.
     F_chis : dict
-        dictionary of log-amplitude power spectral densities for each ray_id.
+        dictionary of log-amplitude power spectral densities per cycle/m for each ray_id.
     """
 
     zeta0 = 7.3 * np.sqrt(GM_energy)
@@ -1697,6 +1708,130 @@ def fit_coherence_length(lags, MC, L0: float):
     return float(popt[0]), float(popt[1])
 
 
+def fit_vertical_coherence(dz, MC, L0: float = 100.0, A0_init: float = 4e11):
+    r"""
+    Least squares fit of `gaussian_coherence_model` to the nonzero lags of an unnormalized mutual
+    coherence. The zero lag is biased by noise and is omitted from the fit.
+
+    Parameters
+    ----------
+    dz : np.array
+        lags of the mutual coherence estimate, starting at lag 0
+    MC : np.array
+        unnormalized mutual coherence estimate at `dz`
+    L0 : float
+        initial guess of the coherence length, in units of `dz`
+    A0_init : float
+        initial guess of the amplitude, in units of `MC`
+
+    Returns
+    -------
+    A0 : float
+        fitted amplitude, NaN if the fit fails
+    z0 : float
+        fitted coherence length in units of `dz`, NaN if the fit fails
+    """
+    dz = np.asarray(dz, dtype=float)[1:]
+    MC = np.asarray(MC, dtype=float)[1:]
+    valid = np.isfinite(dz) & np.isfinite(MC)
+
+    def residuals(params):
+        z0, A0 = params
+        return gaussian_coherence_model(dz[valid], A0, z0) - MC[valid]
+
+    try:
+        result = optimize.least_squares(
+            residuals,
+            x0=[L0, A0_init],
+            bounds=([0, 0], [np.inf, np.inf]),
+            x_scale="jac",  # z0 ~ 1e2 and A ~ 1e11 differ by many orders of magnitude
+        )
+    except (RuntimeError, ValueError, TypeError):
+        return np.nan, np.nan
+    if not result.success:
+        return np.nan, np.nan
+
+    z0, A0 = result.x
+    return float(A0), float(z0)
+
+
+def _jackknife_var(theta):
+    """
+    Jackknife variance, (M-1)/M sum_k (theta_k - mean(theta))^2, of leave-one-out estimates `theta`
+    of shape (M, ...).
+    """
+    theta = np.asarray(theta, dtype=float)
+    M = theta.shape[0]
+    return (M - 1) / M * np.sum((theta - np.mean(theta, axis=0)) ** 2, axis=0)
+
+
+def jackknife_vertical_coherence(X, dz: float = 9.0):
+    r"""
+    Vertical coherence of one ray, normalized by the amplitude of a Gaussian fit, with leave-one-out
+    jackknife variances over transmissions.
+
+    The unnormalized mutual coherence $\hat{C}$ (`estimate_mutual_coherence`, zero lag kept) is fitted by
+    `fit_vertical_coherence` to give $A_0$ and $z_0$, and the vertical coherence is $\hat{C} / A_0$. For
+    each transmission $k$, $\hat{C}_k$, $A_{0,k}$ and $z_{0,k}$ are recomputed without it, and the
+    variance of the vertical coherence is the jackknife variance of the ratio $\hat{C}_k / A_{0,k}$, so
+    it includes the uncertainty of $A_0$.
+
+    Parameters
+    ----------
+    X : np.array
+        wavefront values of shape (transmission, hydrophone)
+    dz : float
+        hydrophone spacing [m]
+
+    Returns
+    -------
+    vc : dict
+        - lags : lags [m], starting at 0
+        - MC : unnormalized mutual coherence at `lags`
+        - A0, z0 : Gaussian fit amplitude and coherence length [m] of `MC`
+        - VC : vertical coherence, MC / A0
+        - VC_var, A0_var, z0_var : jackknife variances of VC (per lag), A0 and z0
+        - MC_jk, A0_jk, z0_jk : leave-one-out estimates, with leading dimension transmission
+    """
+    X = np.asarray(X)
+    M = X.shape[0]
+
+    lags, MC, _, _, _ = estimate_mutual_coherence(
+        X, dz, omit_zero_lag=False, norm=False
+    )
+    A0, z0 = fit_vertical_coherence(lags, MC)
+
+    MC_jk = []
+    A0_jk = []
+    z0_jk = []
+    for k in range(M):
+        _, MC_k, _, _, _ = estimate_mutual_coherence(
+            np.delete(X, k, axis=0), dz, omit_zero_lag=False, norm=False
+        )
+        A0_k, z0_k = fit_vertical_coherence(lags, MC_k)
+        MC_jk.append(MC_k)
+        A0_jk.append(A0_k)
+        z0_jk.append(z0_k)
+
+    MC_jk = np.array(MC_jk)
+    A0_jk = np.array(A0_jk)
+    z0_jk = np.array(z0_jk)
+
+    return {
+        "lags": lags,
+        "MC": MC,
+        "A0": A0,
+        "z0": z0,
+        "VC": MC / A0,
+        "VC_var": _jackknife_var(MC_jk / A0_jk[:, None]),
+        "A0_var": float(_jackknife_var(A0_jk)),
+        "z0_var": float(_jackknife_var(z0_jk)),
+        "MC_jk": MC_jk,
+        "A0_jk": A0_jk,
+        "z0_jk": z0_jk,
+    }
+
+
 def estimate_observed_coherence_lengths(
     wavefront_values: dict, dz: float = 9.0, dt: float = 3600.0
 ):
@@ -1704,8 +1839,10 @@ def estimate_observed_coherence_lengths(
     Estimate the observed vertical coherence length $z_0$ and coherence time $t_0$ for each ray by fitting
     `gaussian_coherence_model` to the mutual coherence of the wavefront values.
 
-    The depth mutual coherence omits the zero lag (biased by noise). The time mutual coherence keeps the
-    zero lag, using the hydrophones as snapshots and the transmissions as time samples.
+    $z_0$ is from `jackknife_vertical_coherence`: a fit to the nonzero lags of the unnormalized depth
+    mutual coherence (the zero lag is biased by noise), with a leave-one-transmission-out jackknife
+    standard deviation. The time mutual coherence keeps the zero lag, using the hydrophones as snapshots
+    and the transmissions as time samples.
 
     Parameters
     ----------
@@ -1719,17 +1856,20 @@ def estimate_observed_coherence_lengths(
     Returns
     -------
     coherence_lengths : dict
-        for each ray ID, a dict with `z0` [m] and `t0` [s]
+        for each ray ID, a dict with `z0` [m], its jackknife standard deviation `z0_std` [m], and `t0` [s]
     """
     coherence_lengths = {}
     for ray_id, X in wavefront_values.items():
-        dzs, MC_z, _, _, _ = estimate_mutual_coherence(X, dz, omit_zero_lag=True)
-        _, z0 = fit_coherence_length(dzs, MC_z, L0=100.0)
+        vc = jackknife_vertical_coherence(X, dz)
 
         dts, MC_t, _, _, _ = estimate_mutual_coherence(X.T, dt, omit_zero_lag=False)
         _, t0 = fit_coherence_length(dts, MC_t, L0=dt)
 
-        coherence_lengths[ray_id] = {"z0": z0, "t0": t0}
+        coherence_lengths[ray_id] = {
+            "z0": vc["z0"],
+            "z0_std": float(np.sqrt(vc["z0_var"])),
+            "t0": t0,
+        }
 
     return coherence_lengths
 
@@ -1809,6 +1949,11 @@ def coherence_lengths_latex_table(observed: dict, theory: dict) -> str:
             return "--"
         return f"{value * scale:.1f}"
 
+    def fmt_std(value, std):
+        if std is None or not np.isfinite(std) or fmt(value) == "--":
+            return fmt(value)
+        return f"{value:.1f} $\\pm$ {std:.1f}"
+
     ray_ids = [
         ray_id for ray_id in EIG_INDEXS if ray_id in observed or ray_id in theory
     ]
@@ -1823,7 +1968,8 @@ def coherence_lengths_latex_table(observed: dict, theory: dict) -> str:
             obs_n = obs if n == 0 else {}
             pair = str(n) if ray_id in theory else "--"
             rows.append(
-                f"${ray_id}$ & {pair} & {fmt(obs_n.get('z0'))} & {fmt(gm.get('z0'))} & "
+                f"${ray_id}$ & {pair} & {fmt_std(obs_n.get('z0'), obs_n.get('z0_std'))} & "
+                f"{fmt(gm.get('z0'))} & "
                 f"{fmt(obs_n.get('t0'), 1 / 60)} & {fmt(gm.get('t0'), 1 / 60)} \\\\"
             )
 
@@ -2039,42 +2185,143 @@ def compute_mean_pulse():
     )
 
 
-def _jackknife_log_std(F):
+def _log_periodogram_bias(dof):
+    r"""
+    Bias of the log10 of a periodogram, $E[\log_{10}(\chi^2_\nu / \nu)] = (\psi(\nu/2) - \ln(\nu/2)) / \ln 10$,
+    for a periodogram bin with $\nu$ degrees of freedom: $-\gamma / \ln 10 = -0.2507$ for $\nu = 2$ and
+    $-(\gamma + \ln 2) / \ln 10 = -0.5517$ for $\nu = 1$.
+
+    Parameters
+    ----------
+    dof : float or np.array
+        degrees of freedom of each periodogram bin
+
+    Returns
+    -------
+    bias : float or np.array
+        expected value of log10(periodogram / true spectrum)
     """
-    Jackknife estimate of the standard deviation of the log-mean, mean(log10(F)), over transmissions.
+    dof = np.asarray(dof, dtype=float)
+    return (scipy.special.digamma(dof / 2) - np.log(dof / 2)) / np.log(10)
+
+
+def _periodogram_dof(n_samples: int, n_bins: int):
+    """
+    Degrees of freedom of the bins of a one-sided periodogram of `n_samples` real samples, with the DC bin
+    removed: 2 for every bin except the Nyquist bin (the last one, when `n_samples` is even), which has 1.
+
+    Parameters
+    ----------
+    n_samples : int
+        number of samples the periodogram was computed from
+    n_bins : int
+        number of bins after removing the DC bin
+
+    Returns
+    -------
+    dof : np.array
+        degrees of freedom of each bin, shape (n_bins,)
+    """
+    dof = np.full(n_bins, 2.0)
+    if n_samples % 2 == 0:
+        dof[-1] = 1.0
+    return dof
+
+
+def _one_sided_periodogram(x, fs: float):
+    """
+    One-sided periodogram along axis 1 of `x`, as a power spectral density at every bin except DC.
+
+    `scipy.signal.periodogram` doubles every bin of the one-sided spectrum except DC and, for an even record,
+    the Nyquist bin, so that the bins sum to the variance. The Nyquist bin is then half the power spectral
+    density there; it is doubled here so that every bin estimates the same one-sided density.
+
+    Parameters
+    ----------
+    x : np.array
+        real samples, shape (n_records, n_samples)
+    fs : float
+        sampling frequency
+
+    Returns
+    -------
+    freqs : np.array
+        frequencies of the bins, shape (n_bins,)
+    P : np.array
+        one-sided power spectral density, shape (n_records, n_bins)
+    dof : np.array
+        degrees of freedom of each bin, see `_periodogram_dof`
+    """
+    freqs, P = signal.periodogram(x, fs=fs, axis=1)
+    freqs, P = freqs[1:], P[:, 1:]
+    n_samples = x.shape[1]
+    if n_samples % 2 == 0:
+        P[:, -1] *= 2
+    return freqs, P, _periodogram_dof(n_samples, len(freqs))
+
+
+def _jackknife_log_mean(F, dof):
+    r"""
+    Bias-corrected log-mean of periodograms over transmissions, with its jackknife standard error.
+
+    The log-mean, mean(log10(F)), of periodograms with $\nu$ degrees of freedom is biased low by
+    `_log_periodogram_bias` (a factor of $e^{-\gamma} = 0.56$ for $\nu = 2$), which is removed. The
+    standard error is the leave-one-transmission-out jackknife (Efron & Tibshirani 1993, Ch. 11), which
+    for a mean equals std(log10(F), ddof=1) / sqrt(M). The bias correction is a constant and does not
+    change it.
 
     Parameters
     ----------
     F : np.array
-        power spectral density, shape (n_transmissions, n_wavenumbers)
+        periodograms, shape (n_transmissions, n_wavenumbers)
+    dof : np.array
+        degrees of freedom of each wavenumber bin, shape (n_wavenumbers,), see `_periodogram_dof`
 
     Returns
     -------
-    mean_jk : np.array
-        leave-one-out means of log10(F), shape (n_transmissions, n_wavenumbers)
+    lm : np.array
+        bias-corrected log-mean, 10 ** (mean(log10(F)) - bias), shape (n_wavenumbers,)
     ls : np.array
-        jackknife log standard deviation of the log-mean as a multiplicative factor, 10 ** sigma_jk,
+        jackknife standard error of log10(lm) as a multiplicative factor, 10 ** sigma_jk,
         shape (n_wavenumbers,)
     """
     M = F.shape[0]
     log_F = np.log10(F)
     # leave out one transmission at a time
     mean_jk = np.stack([np.mean(np.delete(log_F, j, axis=0), axis=0) for j in range(M)])
-    # jackknife variance
-    var_jk = (M - 1) / M * np.sum((mean_jk - np.mean(mean_jk, axis=0)) ** 2, axis=0)
-    return mean_jk, 10 ** np.sqrt(var_jk)
+    lm = 10 ** (np.mean(log_F, axis=0) - _log_periodogram_bias(dof))
+    return lm, 10 ** np.sqrt(_jackknife_var(mean_jk))
 
 
-def estimate_F_phi_chi(remove_array_tilt: bool = False):
+def _hann_window(n: int):
+    """
+    Periodic Hann window of length `n`, scaled to unit mean square so that it leaves the expected periodogram
+    of white noise, and so its total power, unchanged.
+    """
+    window = signal.windows.hann(n, sym=False)
+    return window / np.sqrt(np.mean(window**2))
+
+
+def estimate_F_phi_chi(remove_array_tilt: bool = False, hann: bool = True):
     r"""
     Estimate observed $F_{\phi}$ and $F_{\chi}$ for the acoustic receptions.
 
-    Periodograms are computed for each of the receptions and the periodograms are averaged together in the log domain
+    Periodograms are computed for each of the receptions and the periodograms are averaged together in the log
+    domain, with the bias of the log-mean removed (`_jackknife_log_mean`). The uncertainty of the mean is the
+    leave-one-transmission-out jackknife standard error.
+
+    Each depth record has its mean removed and is tapered with a Hann window (`_hann_window`) before the
+    periodogram. Without the taper the very red phase spectrum leaks into every bin and sets a floor that hides
+    the spectrum at high wavenumbers. The window has unit mean square, so white noise keeps its level, but
+    variance at scales longer than the array, which shows up as a slope or curvature concentrated at the array
+    ends, is down-weighted.
 
     Parameters
     ----------
     remove_array_tilt : bool
         If True, wavefront values with array tilt removed are used.
+    hann : bool
+        If True (default), taper with a Hann window. False gives the untapered (rectangular window) periodogram.
     Returns
     -------
     m_data : np.array
@@ -2084,14 +2331,15 @@ def estimate_F_phi_chi(remove_array_tilt: bool = False):
     F_chi_data : dict
         dictionary containing arrays of log-amplitude power spectral density, $F_\\chi$ [rad m]
     F_phi_lm : dict
-        dictionary containing arrays of log-mean phase power spectral density, $F_\\phi$ [rad m]
+        dictionary containing arrays of bias-corrected log-mean phase power spectral density, $F_\\phi$ [rad m]
     F_phi_ls : dict
-        dictionary containing arrays of jackknife log-standard deviation of the log-mean phase power spectral
+        dictionary containing arrays of the jackknife standard error of the log-mean phase power spectral
         density, $F_\\phi$, as a multiplicative factor
     F_chi_lm : dict
-        dictionary containing arrays of log-mean log-amplitude power spectral density, $F_\\chi$ [rad m]
+        dictionary containing arrays of bias-corrected log-mean log-amplitude power spectral density,
+        $F_\\chi$ [rad m]
     F_chi_ls : dict
-        dictionary containing arrays of jackknife log-standard deviation of the log-mean log-amplitude power
+        dictionary containing arrays of the jackknife standard error of the log-mean log-amplitude power
         spectral density, $F_\\chi$, as a multiplicative factor
     """
 
@@ -2104,10 +2352,8 @@ def estimate_F_phi_chi(remove_array_tilt: bool = False):
     F_phi_data = {}
 
     F_chi_lm = {}
-    F_chi_ls_jk = {}
     F_chi_ls = {}
     F_phi_lm = {}
-    F_phi_ls_jk = {}
     F_phi_ls = {}
 
     for ray_id in ray_ids:
@@ -2121,35 +2367,180 @@ def estimate_F_phi_chi(remove_array_tilt: bool = False):
         phase = phase - np.nanmean(phase, axis=1)[:, None]
         phase[np.isnan(phase)] = 0
 
+        lamp = lamp - np.mean(lamp, axis=1)[:, None]
+
+        # taper in depth
+        if hann:
+            window = _hann_window(phase.shape[1])
+            phase = phase * window
+            lamp = lamp * window
+
         # m_data [1/m]
         # F_phi_data, F_chi_data [rad m]
-        _, F_phi_data[ray_id] = signal.periodogram(phase, fs=1 / 9, axis=1)
-        m_data, F_chi_data[ray_id] = signal.periodogram(lamp, fs=1 / 9, axis=1)
+        _, F_phi_data[ray_id], dof = _one_sided_periodogram(phase, fs=1 / 9)
+        m_data, F_chi_data[ray_id], dof = _one_sided_periodogram(lamp, fs=1 / 9)
 
-        # remove DC comp
-        m_data = m_data[1:]
-        F_chi_data[ray_id] = F_chi_data[ray_id][:, 1:]
-        F_phi_data[ray_id] = F_phi_data[ray_id][:, 1:]
-
-        # Take mean and standard deviation in log space
-        F_chi_lm[ray_id] = 10 ** np.mean(np.log10(F_chi_data[ray_id]), axis=0)
-
-        # Compute the jacknife log standard deviation of the log-mean of F_chi_data
-        F_chi_ls_jk[ray_id], F_chi_ls[ray_id] = _jackknife_log_std(F_chi_data[ray_id])
-        # F_chi_ls[ray_id] = 10 ** np.std(np.log10(F_chi_data[ray_id]), axis=0)
-
-        F_phi_lm[ray_id] = 10 ** np.mean(np.log10(F_phi_data[ray_id]), axis=0)
-
-        # compute the jacknife log standard deviation of the log-mean of F_phi_data
-        F_phi_ls_jk[ray_id], F_phi_ls[ray_id] = _jackknife_log_std(F_phi_data[ray_id])
-        # F_phi_ls[ray_id] = 10 ** np.std(np.log10(F_phi_data[ray_id]), axis=0)
+        # bias-corrected log-mean and its jackknife standard error
+        F_chi_lm[ray_id], F_chi_ls[ray_id] = _jackknife_log_mean(
+            F_chi_data[ray_id], dof
+        )
+        F_phi_lm[ray_id], F_phi_ls[ray_id] = _jackknife_log_mean(
+            F_phi_data[ray_id], dof
+        )
 
     return m_data, F_phi_data, F_chi_data, F_phi_lm, F_phi_ls, F_chi_lm, F_chi_ls
+
+
+DUCTED_RAY_IDS = ["+7", "-7", "+6", "-6"]
+
+
+def _lag1_autocorrelation(samples):
+    """Lag-1 autocorrelation along axis 0 of `samples`, shape (M, K), for each column."""
+    x = samples - np.mean(samples, axis=0)
+    return np.sum(x[1:] * x[:-1], axis=0) / np.sum(x**2, axis=0)
+
+
+def transmission_independence_test(samples, n_perm: int = 2000, seed: int = 0):
+    r"""
+    Test that per-transmission estimates are uncorrelated from one transmission to the next, the assumption
+    of the leave-one-transmission-out jackknife.
+
+    The lag-1 autocorrelation $r_1$ of each column is compared to the $\pm 2 / \sqrt{M}$ band expected for
+    uncorrelated samples, whose mean is $-1/M$. The one-sided p-value of the mean $r_1$ is from permuting the
+    order of the transmissions, with the same permutation for every column so that correlations between
+    columns are kept.
+
+    Parameters
+    ----------
+    samples : np.array
+        per-transmission estimates, shape (M, K), with the transmissions (rows) in time order and equally
+        spaced
+    n_perm : int
+        number of permutations
+    seed : int
+        seed of the permutations
+
+    Returns
+    -------
+    result : dict
+        - r1 : lag-1 autocorrelation of each column, shape (K,)
+        - mean_r1 : mean of r1
+        - band : 2 / sqrt(M)
+        - null_mean : -1 / M, the expected mean of r1 for uncorrelated samples
+        - n_outside : number of columns with |r1| > band
+        - p : one-sided permutation p-value of mean_r1 (small if the transmissions are positively correlated)
+    """
+    samples = np.asarray(samples, dtype=float)
+    M = samples.shape[0]
+
+    r1 = _lag1_autocorrelation(samples)
+    rng = np.random.default_rng(seed)
+    null = np.array(
+        [
+            np.mean(_lag1_autocorrelation(samples[rng.permutation(M)]))
+            for _ in range(n_perm)
+        ]
+    )
+    band = 2 / np.sqrt(M)
+
+    return {
+        "r1": r1,
+        "mean_r1": float(np.mean(r1)),
+        "band": float(band),
+        "null_mean": -1 / M,
+        "n_outside": int(np.sum(np.abs(r1) > band)),
+        "p": float(np.mean(null >= np.mean(r1))),
+    }
+
+
+def _independence_test_per_ray(samples_per_ray: dict, **kwargs):
+    """Pooled `transmission_independence_test` of the columns of all rays, and the mean r1 of each ray."""
+    pooled = transmission_independence_test(
+        np.hstack(list(samples_per_ray.values())), **kwargs
+    )
+    per_ray = {
+        ray_id: float(np.mean(_lag1_autocorrelation(samples)))
+        for ray_id, samples in samples_per_ray.items()
+    }
+    return {"pooled": pooled, "per_ray": per_ray}
+
+
+def independence_test_F_phi_chi(remove_array_tilt: bool = False, **kwargs):
+    """
+    `transmission_independence_test` of the per-transmission log-periodograms, log10 F_phi and log10 F_chi
+    (`estimate_F_phi_chi`), at every wavenumber of the ducted rays.
+
+    Parameters
+    ----------
+    remove_array_tilt : bool
+        If True, wavefront values with array tilt removed are used.
+    **kwargs
+        passed to `transmission_independence_test`
+
+    Returns
+    -------
+    result : dict
+        for "phi" and "chi", a dict with the "pooled" `transmission_independence_test` over the wavenumbers of
+        all ducted rays, and the mean r1 of each ray ("per_ray")
+    """
+    _, F_phi_data, F_chi_data, _, _, _, _ = estimate_F_phi_chi(
+        remove_array_tilt=remove_array_tilt
+    )
+    return {
+        name: _independence_test_per_ray(
+            {ray_id: np.log10(F[ray_id]) for ray_id in DUCTED_RAY_IDS}, **kwargs
+        )
+        for name, F in [("phi", F_phi_data), ("chi", F_chi_data)]
+    }
+
+
+def independence_test_vertical_coherence(
+    wavefront_values: dict, dz: float = 9.0, max_lag: float = 180.0, **kwargs
+):
+    r"""
+    `transmission_independence_test` of the per-transmission lagged products $R_k(\Delta z)$, whose mean over
+    transmissions is the mutual coherence of `jackknife_vertical_coherence`, at every lag up to `max_lag` of
+    the ducted rays.
+
+    Neighbouring lags are strongly correlated with each other, so `n_outside` is not a count of independent
+    tests; report `mean_r1`.
+
+    Parameters
+    ----------
+    wavefront_values : dict
+        wavefront values for each ray ID, of shape (transmission, hydrophone), from `get_wavefront_values`
+    dz : float
+        hydrophone spacing [m]
+    max_lag : float
+        largest lag tested [m]. The largest lags have few hydrophone pairs and are excluded.
+    **kwargs
+        passed to `transmission_independence_test`
+
+    Returns
+    -------
+    result : dict
+        the "pooled" `transmission_independence_test` over the lags of all ducted rays, and the mean r1 of each
+        ray ("per_ray")
+    """
+    samples = {}
+    for ray_id in DUCTED_RAY_IDS:
+        X = wavefront_values[ray_id]
+        R = []
+        for k in range(X.shape[0]):
+            lags, R_k, _, _, _ = estimate_mutual_coherence(
+                X[k : k + 1], dz, omit_zero_lag=False, norm=False
+            )
+            R.append(R_k)
+        samples[ray_id] = np.array(R)[:, lags <= max_lag]
+    return _independence_test_per_ray(samples, **kwargs)
 
 
 def phi_chi_spectrum_model(m, GM, phi_noise, chi_noise, ray_id, all_paths=False):
     """
     phi_chi_spectrum_model - compute model of F_phi and F_chi, GM internal waves, WFT, and white observational noise
+
+    The wavenumbers are in rad/m but the spectra and noise levels are one-sided densities per cycle/m, the
+    units of `estimate_F_phi_chi` (see `compute_F_phi_chi`).
 
     Parameters
     ----------
@@ -2254,9 +2645,14 @@ def fit_F_phi_chis(m_data, F_phi_lm, F_chi_lm, F_phi_ls, F_chi_ls):
     for ray_id in tqdm(["+7", "-7", "+6", "-6"]):
         initial_params = np.array([1, 1e0, 2e-1])
 
-        # Minimize
+        # Minimize. GM must stay positive (zeta0 = 7.3 sqrt(GM)) and the noise levels non-negative,
+        # otherwise the simplex can step to an undefined model when the optimum GM is below 1.
         results[ray_id] = optimize.minimize(
-            residuals, initial_params, args=(ray_id,), method="Nelder-Mead"
+            residuals,
+            initial_params,
+            args=(ray_id,),
+            method="Nelder-Mead",
+            bounds=[(1e-3, None), (0, None), (0, None)],
         )
 
     return results
