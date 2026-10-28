@@ -11,8 +11,8 @@ fitting, and wavefront/mean-pulse extraction from ray-traced eigenrays.
 This repo is a **git submodule** of the NESCAFE23 workspace, checked out at `projects/n23_fluctuations_ragland/`
 there. See the workspace root `CLAUDE.md` for the full cross-repo dependency graph.
 
-**Depends on:** `nescafe23` only (verified by repo-wide grep — no `acoustic_inversion` or `nesma_param` usage
-anywhere). Also depends directly on external `pygenray` (ray tracing, GitHub install) and `cmps` (colormap
+**Depends on:** `nescafe23` (no `acoustic_inversion` usage). `nesma_param` is an **optional** extra
+(`[nesma]`), imported lazily only by `theory_environments.nesma_beta0_environment`. Also depends directly on external `pygenray` (ray tracing, GitHub install) and `cmps` (colormap
 package, GitHub install, used by the panel app).
 
 ## Commands
@@ -111,6 +111,48 @@ uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dash
   - `common_arrival_time_shift_estimation` reads `dT_t_upper`/`dT_t_lower` from `T_t_estimated.pkl`.
     Only this project's "compute arrival time offset" writes those keys. The base `nescafe23` CLI
     writes the same file without them.
+- **`src/n23_fluctuations_ragland/estimation.py`** — experiments on the design decisions of the F_φ/F_χ
+  estimate (CLI: "create estimation experiments config" / "run estimation experiments", template
+  `templates/estimation_experiments.yaml`). An `Estimator` holds each choice: wavefront source, bad-element
+  handling, detrend, removal of the pattern common to transmissions (per ray, over the ducted rays, or over
+  all arrivals), prewhitening,
+  taper (rectangular/Hann/Tukey/DPSS multitaper), log-mean vs mean. Its defaults reproduce
+  `tools.estimate_F_phi_chi(remove_array_tilt=True)` exactly (`tests/test_estimation.py`), except that phase is
+  unwrapped with the bad elements already removed. The template's base instead keeps all 28 elements:
+  elements 4, 5 (about -1.1 and -0.85 rad) and 20 (about -1.1 rad) carry a constant phase offset that is the
+  same on every transmission and on every arrival from 7° to 29°, up- and down-going, so it is electronic,
+  not an element-position error, which would scale with sin θ. It is removed as the common phase
+  (`common_phase: all_arrivals`), pooled over every lower-array arrival except `common_omit` (default
+  `tools.ARRAY_TILT_OMIT`, as for the array tilt) and over picks with QC flags 1 or 5 (`common_qc_only`).
+  The common phase is removed as phasors before unwrapping (`circular_common_phase`), because the raw
+  neighbour steps around those elements reach ~3 rad. Each variant is fitted with its own jackknife SEs, and a
+  Monte Carlo runs every variant on synthetic wavefronts with a known GM + white-noise spectrum. The fit uses
+  F(GM) = GM × F(GM=1): the model is linear in the GM level, so the slow `compute_n23_ray_variables` runs once.
+  The synthetic results depend on the GM model being right, including the zero (or flat) spectrum below
+  mode 1. Only the rays in `ray_ids` are synthesized, so `all_arrivals` pools just those there. The wavefront
+  source never affects the synthetic runs, so variants that differ only in it give
+  identical synthetic results. The observed common pattern enters them only with
+  `synthetic.common_pattern: observed`.
+- **`src/n23_fluctuations_ragland/theory_environments.py`** — runs the analysis' own theory code on other
+  environments, to tell environment effects from code effects in the WFT vs path-integral gap. An environment
+  is a Dataset `c` [m/s], `N` [cph], `dcdz_p` [1/s] on `(depth, range)`, source at range 0 (the contract of
+  `tools.fctd_environment`). `run_theory(name)` traces it with `tools.run_rays(envi_field=...)` (same geometry,
+  flat 5000 m bottom) and returns ray variables, F_φ/F_χ, D_PI, D_wft φ/χ (`tools.compute_wft_structure_function`),
+  z0, Φ², Λ, cached at `dataproducts/theory_envs/<name>.pkl`. `ENVIRONMENTS`: `munk` (canonical, analytic,
+  self-consistent c/N/dc_p), `fctd` (the analysis' cached ray run + `EIG_INDEXS`, so it is exactly the current
+  product), `fctd_range_avg` (FCTD t, SP averaged over 0–153 km, re-derived), `nesma_beta0` (nesma_param β = 0:
+  WOA mean + Argo EOFs at the SSH-conditioned mean coefficients, SSH of 2023-04-30 on the SIOE→SION geodesic;
+  Argo EOF cache `dataproducts/argo_EOF_fluct.npz`, kept apart from the inversion's). All T,S-based
+  environments go through `nescafe23.acoustic_fields_from_TS`, the derivation of `compute_filtered_fctd_grid`.
+  Comparison notebook: `notebooks/theory_environment_comparison.ipynb`.
+  - In canonical Munk at this geometry only `-6` (and `-5`) reach the 1139 m receiver; `+7`, `-7`, `+6` have no
+    eigenray there, so Munk compares on `-6` only.
+- **Eigenray pairing outside the FCTD run.** `tools.pair_eigenrays` pairs forward/backward eigenrays by
+  reciprocity (backward launch = −forward received angle, backward received = −forward launch;
+  `linear_sum_assignment` on the larger mismatch, 1° tolerance). On the cached FCTD run it reproduces
+  `EIG_INDEXS` for `+7, -7, +6, -6`, but **not** for `+7b` (reciprocity gives (1, 2), hand-picked (1, 0)) or
+  `-5b`. `compute_n23_ray_variables(eig_indexs="reciprocity")` uses it; the default (`None`) is still
+  `EIG_INDEXS`. `run_rays` and `compute_n23_ray_variables` both default to `tools.fctd_environment()`.
 - **`src/archive.py`** — dead/archived code, excluded from linting; not maintained.
 - **`panel_apps/source_geometry_sweep.py`** — standalone Panel dashboard visualizing the source-geometry
   grid-search ray-tracing results; not part of the installable package.

@@ -284,6 +284,114 @@ def get_wavefront_values(dss, remove_array_tilt=False, half_window=1.0):
     return wavefront_amplitudes
 
 
+def fctd_environment(
+    z_smooth: float = 200, r_smooth: float = 15000, front_location: float = 35e3
+) -> xr.Dataset:
+    """
+    The smoothed FCTD environment used for the NESCAFE23 ray runs, shifted so that the front sits
+    ``front_location`` meters further from the source.
+
+    Parameters
+    ----------
+    z_smooth : float
+        vertical smoothing scale [m], passed to `compute_filtered_fctd_grid`. Default is 200 m.
+    r_smooth : float
+        horizontal smoothing scale [m], passed to `compute_filtered_fctd_grid`. Default is 15 km.
+    front_location : float
+        range shift [m] applied to the FCTD range coordinate. Default is 35 km.
+
+    Returns
+    -------
+    envi_field : xr.Dataset
+        environment with variables ``c`` [m/s], ``N`` [cph], ``dcdz_p`` [1/s], ``t``, ``SP``, ``SA`` on
+        ``(depth, range)``
+    """
+    envi_field = compute_filtered_fctd_grid(z_smooth=z_smooth, r_smooth=r_smooth)
+
+    return envi_field.assign_coords(
+        {"range": (envi_field.range.values + front_location)}
+    )
+
+
+def pair_eigenrays(
+    ray_id: str,
+    eigs: pr.EigenRays,
+    eigs_backward: pr.EigenRays,
+    ridx: int = 0,
+    tol: float = 1.0,
+):
+    """
+    Pair forward and backward eigenrays of one ray id by reciprocity.
+
+    A backward eigenray (launched at the receiver) that retraces a forward eigenray has launch angle
+    equal to minus the forward received angle, and received angle equal to minus the forward launch
+    angle. Each forward eigenray is assigned the backward eigenray minimizing the larger of the two
+    mismatches (one-to-one, `scipy.optimize.linear_sum_assignment`). On the FCTD ray run this
+    reproduces the hand-picked `EIG_INDEXS` for the ducted rays.
+
+    Parameters
+    ----------
+    ray_id : str
+        NESCAFE23 ray identifier (e.g. ``'+7'``)
+    eigs : pr.EigenRays
+        forward eigenrays
+    eigs_backward : pr.EigenRays
+        backward eigenrays, traced in the range-flipped environment
+    ridx : int
+        receiver depth index of ``eigs``. Default is 0.
+    tol : float
+        largest accepted angle mismatch [deg]. Pairs above it are dropped with a warning.
+
+    Returns
+    -------
+    pairs : list of tuple of int
+        ``(eig_idx_forward, eig_idx_backward)`` relative indices, as in `EIG_INDEXS`, sorted by the
+        forward index. Empty if the ray id has no forward or backward eigenray.
+    """
+    ray_id_pr, (sign, number, suffix) = parse_ray_id(ray_id)
+    if number % 2 != 0:
+        ray_id_back = ray_id
+    else:
+        ray_id_back = f"{'+' if sign == '-' else '-'}{number}{suffix}"
+    ray_id_pr_back, _ = parse_ray_id(ray_id_back)
+
+    fwd = np.where(eigs.ray_id[ridx] == ray_id_pr)[0]
+    bck = np.where(eigs_backward.ray_id[0] == ray_id_pr_back)[0]
+    if len(fwd) == 0 or len(bck) == 0:
+        return []
+
+    fwd_launch = np.asarray(eigs.launch_angles[ridx])[fwd]
+    fwd_recv = np.asarray(eigs.received_angles[ridx])[fwd]
+    bck_launch = np.asarray(eigs_backward.launch_angles[0])[bck]
+    bck_recv = np.asarray(eigs_backward.received_angles[0])[bck]
+
+    cost = np.maximum(
+        np.abs(bck_launch[None, :] + fwd_recv[:, None]),
+        np.abs(bck_recv[None, :] + fwd_launch[:, None]),
+    )
+    rows, cols = optimize.linear_sum_assignment(cost)
+
+    pairs = []
+    for i, k in zip(rows, cols, strict=True):
+        if cost[i, k] > tol:
+            warnings.warn(
+                f"{ray_id}: forward eigenray {i} has no reciprocal backward eigenray "
+                f"(best mismatch {cost[i, k]:.2f} deg > {tol} deg); dropped",
+                stacklevel=2,
+            )
+            continue
+        pairs.append((int(i), int(k)))
+
+    unpaired = sorted(set(range(len(fwd))) - set(rows.tolist()))
+    if unpaired:
+        warnings.warn(
+            f"{ray_id}: forward eigenrays {unpaired} outnumber the backward eigenrays; dropped",
+            stacklevel=2,
+        )
+
+    return sorted(pairs)
+
+
 def compute_ray_path_variables(
     ray_id: str,
     eigs: pr.EigenRays,
@@ -303,6 +411,7 @@ def compute_ray_path_variables(
     eig_idx_backward: int = 0,
     latitude: float = 39.192499999,
     dtheta: float = 1e-5,
+    f: float | None = None,
 ):
     """
     Compute variables along ray path that are used in path integral and WFT calculations
@@ -350,6 +459,8 @@ def compute_ray_path_variables(
         latitude of the environment (for Coriolis parameter calculation), Default is midpoint of pilot moorings
     dtheta : float
         small angle increment for vertical fresnel scale calculation, Default is 1e-5, in units of radians
+    f : float, optional
+        Coriolis parameter [rad/s]. If None (default), computed from `latitude`.
 
     Returns
     -------
@@ -435,7 +546,13 @@ def compute_ray_path_variables(
 
     dcdz_ray = dcdz_p.interp({"range": rsx, "depth": -zsx})
 
-    N0B_ray = N.integrate("depth")
+    # integrate N only down to the seafloor of the traced environment (clamped past its ends)
+    seafloor = xr.DataArray(
+        np.interp(N.range, envi.bathymetry.range, envi.bathymetry),
+        dims=["range"],
+        coords={"range": N.range},
+    )
+    N0B_ray = N.where(N.depth <= seafloor, 0).integrate("depth")
     N0B_ray.name = "$N_0 B$"
     N0B_ray.attrs["units"] = "rad m/s"
 
@@ -470,8 +587,9 @@ def compute_ray_path_variables(
     mean_jn1 = np.sum(H / j[:, None], axis=0)
     mean_j = np.sum(j[:, None] * H, axis=0)
 
-    Omega = 7.292115e-5  # Earth Rotation Speed [rad/s]
-    f = 2 * Omega * np.sin(np.radians(latitude))
+    if f is None:
+        Omega = 7.292115e-5  # Earth Rotation Speed [rad/s]
+        f = 2 * Omega * np.sin(np.radians(latitude))
     a = Nray * np.tan(Theta_ray) / f
     # set invalid a values to zero # NOT SURE IF THIS IS RIGHT
     a = a.where(np.isfinite(a), 0)
@@ -608,6 +726,8 @@ def compute_ray_path_variables(
         "rh_forward": ray_hat_forward,
         "rh_backward": ray_hat_backward,
         "wronk": wronk,
+        "m_low": m_low,
+        "m_high": m_high,
     }
 
     return ray_variables
@@ -622,6 +742,7 @@ def compute_n23_ray_variables(
     ray_ids: list | None = None,
     envi_field: xr.Dataset | None = None,
     ray_run: dict | None = None,
+    eig_indexs: dict | str | None = None,
 ):
     """
     Compute the ray path variables for the nescafe23 environment.
@@ -640,9 +761,15 @@ def compute_n23_ray_variables(
     ray_ids : list
         list of ray identifier strings (e.g., '-7', '+10b'). If None, use all ray IDs in EIG_INDEXS.
     envi_field : xr.Dataset, optional
-        xarray dataset of the environment, generated with `create_2D_ocean_slice`. If None, load from pre-computed data (generated from CLI)
+        xarray dataset of the environment with variables ``c``, ``N`` [cph] and ``dcdz_p`` [1/s], on the range
+        coordinates of the ray run (i.e. already shifted to the front location). If None, it is computed with
+        `compute_filtered_fctd_grid(z_smooth=200, r_smooth=15000)` and shifted by 35 km.
     ray_run : dict, optional
         dictionary containing ray run data, generated with `run_rays`. If None, load from pre-computed data (generated from CLI)
+    eig_indexs : dict or "reciprocity", optional
+        forward/backward eigenray pairs per ray id. If None (default), the hand-picked `EIG_INDEXS`, which
+        are only valid for the cached FCTD ray run. ``"reciprocity"`` pairs them with `pair_eigenrays`, for
+        any environment; ray ids without eigenrays are then skipped with a warning.
 
     Returns
     -------
@@ -680,16 +807,9 @@ def compute_n23_ray_variables(
         - 'm_high' : maximum vertical wavenumber along ray
     """
 
-    envi_field = compute_filtered_fctd_grid(z_smooth=200, r_smooth=15000)
+    if envi_field is None:
+        envi_field = fctd_environment()
 
-    # shift front location
-    front_location = 35e3
-
-    envi_field = envi_field.assign_coords(
-        {"range": (envi_field.range.values + front_location)}
-    )
-
-    c = envi_field["c"]
     dcdz_p = envi_field["dcdz_p"]
 
     N = envi_field["N"]
@@ -700,19 +820,11 @@ def compute_n23_ray_variables(
     N_rad = N * (2 * np.pi) / 3600
     N_rad.attrs["units"] = "rad/s"
 
-    bathy = xr.DataArray(
-        np.linspace(4908, 4908, 100),
-        dims=["range"],
-        coords={"range": np.linspace(0, 200e3, 100)},
-    )
-
-    envi = pr.OceanEnvironment2D(sound_speed=c, bathymetry=bathy)
-
     fn = get_data_dir() / "dataproducts" / "ray_run_forward_back.pkl"
 
     if ray_run is None:
-        with fn.open("rb") as f:
-            ray_run = pickle.load(f)
+        with fn.open("rb") as file:
+            ray_run = pickle.load(file)
 
     eigs = ray_run["eigs"]
     eigs_back = ray_run["eigs_back"]
@@ -728,12 +840,26 @@ def compute_n23_ray_variables(
     if ray_ids is None:
         ray_ids = list(EIG_INDEXS.keys())
 
-    tqdm_disable = len(ray_ids) != 0
+    if eig_indexs is None:
+        eig_indexs = EIG_INDEXS
+    elif eig_indexs == "reciprocity":
+        eig_indexs = {
+            ray_id: pair_eigenrays(ray_id, eigs, eigs_back) for ray_id in ray_ids
+        }
+        for ray_id in ray_ids:
+            if not eig_indexs[ray_id]:
+                warnings.warn(
+                    f"{ray_id}: no forward/backward eigenray pair; skipped",
+                    stacklevel=2,
+                )
+
+    tqdm_disable = len(ray_ids) == 1
 
     for _k, ray_id in tqdm(enumerate(ray_ids), disable=tqdm_disable):
-        for n in range(len(EIG_INDEXS[ray_id])):
-            if n == 0:
-                rvs[ray_id] = []
+        if not eig_indexs.get(ray_id):
+            continue
+        rvs[ray_id] = []
+        for n in range(len(eig_indexs[ray_id])):
             rvs[ray_id].append(
                 compute_ray_path_variables(
                     ray_id,
@@ -750,8 +876,9 @@ def compute_n23_ray_variables(
                     zeta0,
                     N0,
                     jstar,
-                    eig_idx_forward=EIG_INDEXS[ray_id][n][0],
-                    eig_idx_backward=EIG_INDEXS[ray_id][n][1],
+                    eig_idx_forward=eig_indexs[ray_id][n][0],
+                    eig_idx_backward=eig_indexs[ray_id][n][1],
+                    f=f,
                 )
             )
 
@@ -1039,6 +1166,8 @@ def compute_F_phi_chi(
     fc: float = 250,
     jstar: float = 3,
     f: float = 9.216181213401561e-05,  # [rad/s]
+    fresnel: bool = True,
+    dilation: bool = False,
 ):
     r"""
     Given the dictionary of ray variables, computed with `compute_ray_path_variables`, compute power spectral density of phase and log-amplitude ($F_\\phi$ and $F_\\chi$)
@@ -1060,6 +1189,11 @@ def compute_F_phi_chi(
         Coriolis parameter [rad/s]
     m : np.array
         array of vertical wavenumbers [rad/m] at which to compute $F_\\phi$ and $F_\\chi$
+    fresnel : bool
+        whether to include the Fresnel filter, default is True, which is consistent with Colosi (2016) Eq. 6.51
+        This is only done for the phase, log-amplitude remains unchanged
+    dilation : bool
+        whether to do change of variables on m to account for the dilation of vertical wavenumber
 
     Returns
     -------
@@ -1070,6 +1204,14 @@ def compute_F_phi_chi(
         array of one-sided log-amplitude power spectral density per cycle/m, $F_\\chi$ [m], at each vertical
         wavenumber in m
     """
+
+    if dilation:
+        m_r = m.copy()  # save original m value (used for valid mask)
+        delta_zr = 2 * np.pi / m
+        delta_z = np.abs(rv["RT_zeta_1"])[:, None] * delta_zr
+        m = 2 * np.pi / delta_z  # overwrite m value
+    else:
+        m_r = m.copy()
 
     wc = 2 * np.pi * fc
     q0 = wc / 1500
@@ -1089,19 +1231,38 @@ def compute_F_phi_chi(
         )
     )
 
-    F_phi_integrand = (
-        8
-        * q0**2
-        / (np.pi**2)
-        * rv["mu2"].values[:, None]
-        * (mstar.values[:, None] / (m * (m**2 + mstar.values[:, None] ** 2)))
-        * rv["Nray"].values[:, None]
-        * f
-        / sigma_L2.values[:, None]
-        * W.values[:, None]
-        * (1 + np.cos(m**2 * rv["Rf2"].values[:, None] / (2 * np.pi)))
-        * np.sqrt(rv["drdt"][:, None] ** 2 + rv["dzdt"][:, None] ** 2)
-    )
+    dilation_factor = 1 / np.abs(rv["RT_zeta_1"])[:, None] if dilation else 1
+
+    if fresnel:
+        F_phi_integrand = (
+            8
+            * q0**2
+            / (np.pi**2)
+            * rv["mu2"].values[:, None]
+            * (mstar.values[:, None] / (m * (m**2 + mstar.values[:, None] ** 2)))
+            * rv["Nray"].values[:, None]
+            * f
+            / sigma_L2.values[:, None]
+            * W.values[:, None]
+            * (1 + np.cos(m**2 * rv["Rf2"].values[:, None] / (2 * np.pi)))
+            * np.sqrt(rv["drdt"][:, None] ** 2 + rv["dzdt"][:, None] ** 2)
+            * dilation_factor
+        )
+    else:
+        F_phi_integrand = (
+            8
+            * q0**2
+            / (np.pi**2)
+            * rv["mu2"].values[:, None]
+            * (mstar.values[:, None] / (m * (m**2 + mstar.values[:, None] ** 2)))
+            * rv["Nray"].values[:, None]
+            * f
+            / sigma_L2.values[:, None]
+            * W.values[:, None]
+            * 2
+            * np.sqrt(rv["drdt"][:, None] ** 2 + rv["dzdt"][:, None] ** 2)
+            * dilation_factor
+        )
     # set nan values of integrand to zero
     F_phi_integrand[np.isnan(F_phi_integrand)] = 0
 
@@ -1119,7 +1280,9 @@ def compute_F_phi_chi(
         * W.values[:, None]
         * (1 - np.cos(m**2 * rv["Rf2"].values[:, None] / (2 * np.pi)))
         * np.sqrt(rv["drdt"][:, None] ** 2 + rv["dzdt"][:, None] ** 2)
+        * dilation_factor
     )
+
     F_chi_integrand[np.isnan(F_chi_integrand)] = 0
     F_chi = scipy.integrate.simpson(F_chi_integrand, axis=0)
 
@@ -1127,8 +1290,8 @@ def compute_F_phi_chi(
     F_phi = 2 * np.pi * F_phi
     F_chi = 2 * np.pi * F_chi
 
-    valid_mask = (m[0] / (2 * np.pi) > rv["m_lo_max"]) & (
-        m[0] / (2 * np.pi) < rv["m_hi_max"]
+    valid_mask = (m_r[0] / (2 * np.pi) > rv["m_lo_max"]) & (
+        m_r[0] / (2 * np.pi) < rv["m_hi_max"]
     )
 
     # set invalid F_phi and F_chi values to nan
@@ -1177,6 +1340,71 @@ def compute_F_phi_chi_n23(GM_energy):
             F_chis[ray_id].append(F_chi)
 
     return m, F_phis, F_chis
+
+
+def compute_wft_structure_function(
+    rv: dict,
+    deltaz_r: np.array,
+    m: np.array,
+    fc: float = 250,
+    jstar: float = 3,
+    f: float = 9.216181213401561e-05,  # [rad/s]
+    fresnel: bool = True,
+    dilation: bool = False,
+):
+    r"""
+    Phase and log-amplitude structure functions of weak fluctuation theory, from the continuum spectra of
+    `compute_F_phi_chi` (Colosi 2016 Eq. 6.52), $D(\Delta z) = 2\int_0^\infty F(m)[1 - \cos(2\pi m \Delta z)]dm$
+    with $m$ in cycles/m. Wavenumbers outside the ray's modal band (NaN in `compute_F_phi_chi`) count as zero.
+
+    Like Eq. 6.52 this is the local straight-ray result: there is no $\xi_1$ dilation of the separation.
+    See `reference/phase_structure_function_wft_vs_path_integral.md`.
+
+    Parameters
+    ----------
+    rv : dict
+        ray variables dictionary, computed with `compute_ray_path_variables`
+    deltaz_r : np.array
+        vertical separations [m]
+    m : np.array
+        vertical wavenumbers [cycles/m] of the integration grid, e.g. ``np.logspace(-5, 0, 4000)``
+    fc : float
+        acoustic center frequency [1/s]
+    jstar : float
+        modal bandwidth parameter for GM spectrum
+    f : float
+        Coriolis parameter [rad/s]
+    fresnel : bool
+        whether to include the Fresnel filter, default is True, which is consistent with Colosi (2016) Eq. 6.51
+    dilation : bool
+        whether to do change of variables on m to account for the dilation of vertical wavenumber
+
+    Returns
+    -------
+    D_phi : np.array
+        phase structure function [rad$^2$] at each separation in ``deltaz_r``
+    D_chi : np.array
+        log-amplitude structure function at each separation in ``deltaz_r``
+    """
+    F_phi, F_chi = compute_F_phi_chi(
+        rv,
+        2 * np.pi * m[None, :],
+        fc=fc,
+        jstar=jstar,
+        f=f,
+        fresnel=fresnel,
+        dilation=dilation,
+    )
+
+    kernel = 1 - np.cos(2 * np.pi * m[None, :] * deltaz_r[:, None])  # (dzr, m)
+    D_phi = 2 * scipy.integrate.trapezoid(
+        np.nan_to_num(F_phi)[None, :] * kernel, m, axis=1
+    )
+    D_chi = 2 * scipy.integrate.trapezoid(
+        np.nan_to_num(F_chi)[None, :] * kernel, m, axis=1
+    )
+
+    return D_phi, D_chi
 
 
 def compute_lambda_phi(
@@ -1264,6 +1492,60 @@ def compute_phase_structure_integrand(
     return integrand
 
 
+def compute_phase_structure_integrand_no_dilation(
+    rv: dict,
+    deltaz_r: np.array,
+    fc: float = 250,
+):
+    r"""
+    Given the ray variables, calculate the phase structure function integrand as a function of vertical seperation $\delta z_r$ and range.
+
+    Parameters
+    ----------
+    rv : dict
+        ray variables dictionary, computed with `compute_ray_path_variables`
+    deltaz_r : np.array
+        array of vertical separations [m] at which to compute phase structure function
+    fc : float
+        acoustic center frequency [1/s]
+
+    Returns
+    -------
+    integrand : np.array
+        array of phase structure function integrand values at each vertical separation in deltaz_r and range value
+    """
+
+    omegac = 2 * np.pi * fc
+
+    ## Compute phase structure function at deltaz_r locations
+    mj = (
+        np.pi
+        * rv["j"][None, :, None]
+        * rv["Nray"].values[:, None, None]
+        / rv["N0B_ray"].values[:, None, None]
+    )  # (s,j,1)
+
+    summand = rv["H"].T[:, :, None] * (
+        (1 - np.cos(mj * deltaz_r[None, None, :])) / rv["j"][None, :, None]
+    )  # (s,j,dzr)
+    # set any nan values to zero
+    summand = np.where(np.isfinite(summand), summand, 0)
+
+    integrand1 = (
+        2 * omegac**2 * rv["mu2"] * rv["L_p"] / (rv["Cray"] ** 2 * rv["mean_jn1"])
+    ).values
+    integrand = (
+        integrand1[:, None]
+        * np.sum(summand, axis=1)
+        * np.sqrt(rv["drdt"] ** 2 + rv["dzdt"] ** 2)[:, None]
+    )  # (s,dzr)
+
+    # set any nan values to zero
+    integrand = np.where(np.isfinite(integrand), integrand, 0)
+
+    return integrand
+
+
 def compute_phase_structure_function(
     rv: dict,
     deltaz_r: np.array,
@@ -1288,6 +1570,35 @@ def compute_phase_structure_function(
     """
 
     integrand = compute_phase_structure_integrand(rv, deltaz_r, fc)
+    D_dzr = scipy.integrate.simpson(integrand, axis=0)
+
+    return D_dzr, integrand
+
+
+def compute_phase_structure_function_no_dilation(
+    rv: dict,
+    deltaz_r: np.array,
+    fc: float = 250,
+):
+    r"""
+    Given the ray variables, calculate the phase structure function as a function of vertical seperation $\delta z_r$.
+
+    Parameters
+    ----------
+    rv : dict
+        ray variables dictionary, computed with `compute_ray_path_variables`
+    deltaz_r : np.array
+        array of vertical separations [m] at which to compute phase structure function
+    fc : float
+        acoustic center frequency [1/s]
+
+    Returns
+    -------
+    D_dzr : np.array
+        array of phase structure function values at each vertical separation in deltaz_r
+    """
+
+    integrand = compute_phase_structure_integrand_no_dilation(rv, deltaz_r, fc)
     D_dzr = scipy.integrate.simpson(integrand, axis=0)
 
     return D_dzr, integrand
@@ -1995,6 +2306,8 @@ def run_rays(
     source_depth: float | None = None,
     receiver_range: float | None = None,
     receiver_depths: list | None = None,
+    envi_field: xr.Dataset | None = None,
+    bathymetry: xr.DataArray | None = None,
 ):
     """
     Solve for the ray fan and eigen rays for the forward and backward propagation environment.
@@ -2004,7 +2317,10 @@ def run_rays(
     Parameters
     ----------
     envi_field : xarray.Dataset, optional
-        xarray Dataset containing 2D ocean slice. If None, will open pre-computed environment
+        environment with sound speed ``c`` on ``(depth, range)``, source at range 0. If None, the shifted
+        FCTD of `fctd_environment`.
+    bathymetry : xarray.DataArray, optional
+        bottom depth [m, positive down] over ``range``. If None, a flat 5000 m bottom over 0-200 km.
     num_rays : int
         Number of rays to shoot in the ray fan. Default is 8000.
     source_depth : float
@@ -2045,22 +2361,19 @@ def run_rays(
             1139.04728384,
             378.59703093,
         ]  # from 12th transmission pressure sensors
-    # z_smooth is set to 200 [m]
-    # r_smooth is set to 15 [km]
-    fctd = compute_filtered_fctd_grid(z_smooth=200, r_smooth=15000)
+    if envi_field is None:
+        envi_field = fctd_environment()
 
-    # shift front location
-    front_location = 35e3  # m
+    c = envi_field["c"]
 
-    fctd = fctd.assign_coords({"range": (fctd.range.values + front_location)})
-
-    c = fctd["c"]
-
-    bathy = xr.DataArray(
-        np.linspace(5000, 5000, 100),  # flat bottom
-        dims=["range"],
-        coords={"range": np.linspace(0, 200e3, 100)},
-    )
+    if bathymetry is None:
+        bathy = xr.DataArray(
+            np.linspace(5000, 5000, 100),  # flat bottom
+            dims=["range"],
+            coords={"range": np.linspace(0, 200e3, 100)},
+        )
+    else:
+        bathy = bathymetry
 
     envi = pr.OceanEnvironment2D(sound_speed=c, bathymetry=bathy)
 
@@ -2325,19 +2638,19 @@ def estimate_F_phi_chi(remove_array_tilt: bool = False, hann: bool = True):
     Returns
     -------
     m_data : np.array
-        array of vertical wavenumbers [1/m] at which $F_\\phi$ and $F_\\chi$ are estimated
+        array of vertical wavenumbers [cycles/m] at which $F_\\phi$ and $F_\\chi$ are estimated
     F_phi_data : dict
-        dictionary containing arrays of phase power spectral density, $F_\\phi$ [rad m]
+        dictionary containing arrays of phase power spectral density, $F_\\phi$ [rad$^2$ m], one-sided per cycle/m
     F_chi_data : dict
-        dictionary containing arrays of log-amplitude power spectral density, $F_\\chi$ [rad m]
+        dictionary containing arrays of log-amplitude power spectral density, $F_\\chi$ [m], one-sided per cycle/m
     F_phi_lm : dict
-        dictionary containing arrays of bias-corrected log-mean phase power spectral density, $F_\\phi$ [rad m]
+        dictionary containing arrays of bias-corrected log-mean phase power spectral density, $F_\\phi$ [rad$^2$ m], one-sided per cycle/m
     F_phi_ls : dict
         dictionary containing arrays of the jackknife standard error of the log-mean phase power spectral
         density, $F_\\phi$, as a multiplicative factor
     F_chi_lm : dict
         dictionary containing arrays of bias-corrected log-mean log-amplitude power spectral density,
-        $F_\\chi$ [rad m]
+        $F_\\chi$ [m], one-sided per cycle/m
     F_chi_ls : dict
         dictionary containing arrays of the jackknife standard error of the log-mean log-amplitude power
         spectral density, $F_\\chi$, as a multiplicative factor
@@ -2376,7 +2689,7 @@ def estimate_F_phi_chi(remove_array_tilt: bool = False, hann: bool = True):
             lamp = lamp * window
 
         # m_data [1/m]
-        # F_phi_data, F_chi_data [rad m]
+        # F_phi_data [rad^2 m], F_chi_data [m], one-sided per cycle/m
         _, F_phi_data[ray_id], dof = _one_sided_periodogram(phase, fs=1 / 9)
         m_data, F_chi_data[ray_id], dof = _one_sided_periodogram(lamp, fs=1 / 9)
 
@@ -2535,7 +2848,9 @@ def independence_test_vertical_coherence(
     return _independence_test_per_ray(samples, **kwargs)
 
 
-def phi_chi_spectrum_model(m, GM, phi_noise, chi_noise, ray_id, all_paths=False):
+def phi_chi_spectrum_model(
+    m, GM, phi_noise, chi_noise, ray_id, all_paths=False, fresnel=True, dilation=False
+):
     """
     phi_chi_spectrum_model - compute model of F_phi and F_chi, GM internal waves, WFT, and white observational noise
 
@@ -2549,9 +2864,9 @@ def phi_chi_spectrum_model(m, GM, phi_noise, chi_noise, ray_id, all_paths=False)
     GM : float
         energy level of Garrett-Munk spectrum, X corresponds to zeta0 = $\\sqrt(X) \\times$ 7.3 [m]
     phi_noise : float
-        observational noise level for phase power spectral density, $F_\\phi$ [rad m]
+        observational noise level for phase power spectral density, $F_\\phi$ [rad$^2$ m], one-sided per cycle/m
     chi_noise : float
-        observational noise level for log-amplitude power spectral density, $F_\\chi$ [rad m]
+        observational noise level for log-amplitude power spectral density, $F_\\chi$ [m], one-sided per cycle/m
     ray_id : str
         ray id for which to compute the model ('+7', '-7', '+6', '-6')
     all_paths : bool, optional
@@ -2570,7 +2885,9 @@ def phi_chi_spectrum_model(m, GM, phi_noise, chi_noise, ray_id, all_paths=False)
             F_phis_noise = []
             F_chis_noise = []
             for k in range(len(rvs[ray_id])):
-                F_phi, F_chi = compute_F_phi_chi(rvs[ray_id][k], m)
+                F_phi, F_chi = compute_F_phi_chi(
+                    rvs[ray_id][k], m, fresnel=fresnel, dilation=dilation
+                )
                 F_phis.append(F_phi)
                 F_chis.append(F_chi)
 
@@ -2579,7 +2896,9 @@ def phi_chi_spectrum_model(m, GM, phi_noise, chi_noise, ray_id, all_paths=False)
 
             return F_phis_noise, F_chis_noise, F_phis, F_chis
         else:
-            F_phi, F_chi = compute_F_phi_chi(rvs[ray_id][0], m)
+            F_phi, F_chi = compute_F_phi_chi(
+                rvs[ray_id][0], m, fresnel=fresnel, dilation=dilation
+            )
 
             F_phi_noise = F_phi + phi_noise
             F_chi_noise = F_chi + chi_noise
@@ -2595,13 +2914,13 @@ def fit_F_phi_chis(m_data, F_phi_lm, F_chi_lm, F_phi_ls, F_chi_ls):
     Parameters
     ----------
     m_data : np.array
-        array of vertical wavenumbers [1/m] at which $F_\\phi$ and $F_\\chi$ are estimated
+        array of vertical wavenumbers [cycles/m] at which $F_\\phi$ and $F_\\chi$ are estimated
         computed with `estimate_F_phi_chi`
     F_phi_lm : dict
-        dictionary containing arrays of log-mean phase power spectral density, $F_\\phi$ [rad m]
+        dictionary containing arrays of log-mean phase power spectral density, $F_\\phi$ [rad$^2$ m], one-sided per cycle/m
         computed with `estimate_F_phi_chi`
     F_chi_lm : dict
-        dictionary containing arrays of log-mean log-amplitude power spectral density, $F_\\chi$ [rad m]
+        dictionary containing arrays of log-mean log-amplitude power spectral density, $F_\\chi$ [m], one-sided per cycle/m
         computed with `estimate_F_phi_chi`
     F_phi_ls : dict
         dictionary containing arrays of log-standard deviation of phase power spectral density, $F_\\phi$

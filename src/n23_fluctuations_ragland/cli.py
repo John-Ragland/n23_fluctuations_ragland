@@ -5,6 +5,7 @@ from pathlib import Path
 import fsspec
 import nescafe23 as n23
 import numpy as np
+import pandas as pd
 import pygenray as pr
 import questionary
 import xarray as xr
@@ -12,7 +13,7 @@ from nescafe23 import convert_to_xarray
 from nescafe23.data import get_data_dir
 from scipy import signal
 
-from n23_fluctuations_ragland import figures, tools
+from n23_fluctuations_ragland import estimation, figures, tools
 
 
 def check_output_exists(*output_paths):
@@ -85,6 +86,8 @@ def main():
             "ɸ χ GM least squares fit",
             "coherence lengths (observed vs. GM)",
             "transmission independence test",
+            "create estimation experiments config",
+            "run estimation experiments",
             "create publication figures config",
             "generate publication figures",
             "exit",
@@ -113,6 +116,10 @@ def main():
         coherence_lengths()
     elif choice == "transmission independence test":
         independence_test()
+    elif choice == "create estimation experiments config":
+        create_estimation_experiments_config()
+    elif choice == "run estimation experiments":
+        run_estimation_experiments()
     elif choice == "create publication figures config":
         create_publication_figures_config()
     elif choice == "generate publication figures":
@@ -224,8 +231,8 @@ def compute_arrival_time_offset():
 
     Rxxs = []
     for k in range(23):
-        interp1 = dss_interp_up[0].values - dss_interp_up[0].mean().values
-        interp2 = dss_interp_up[k].values - dss_interp_up[k].mean().values
+        interp1 = dss_interp_up[0].to_numpy() - dss_interp_up[0].mean().to_numpy()
+        interp2 = dss_interp_up[k].to_numpy() - dss_interp_up[k].mean().to_numpy()
 
         interp1[np.isnan(interp1)] = 0
         interp2[np.isnan(interp2)] = 0
@@ -244,8 +251,8 @@ def compute_arrival_time_offset():
 
     Rxxs = []
     for k in range(23):
-        interp1 = dss_interp_down[0].values - dss_interp_down[0].mean().values
-        interp2 = dss_interp_down[k].values - dss_interp_down[k].mean().values
+        interp1 = dss_interp_down[0].to_numpy() - dss_interp_down[0].mean().to_numpy()
+        interp2 = dss_interp_down[k].to_numpy() - dss_interp_down[k].mean().to_numpy()
 
         interp1[np.isnan(interp1)] = 0
         interp2[np.isnan(interp2)] = 0
@@ -384,7 +391,7 @@ def source_geometry_sweep():
 
     fctd = tools.compute_filtered_fctd_grid(z_smooth=500, r_smooth=10000)
     front_location = 35e3  # m
-    fctd = fctd.assign_coords({"range": (fctd.range.values + front_location)})
+    fctd = fctd.assign_coords({"range": (fctd.range.to_numpy() + front_location)})
 
     c = fctd["c"]
     bathy = xr.DataArray(
@@ -623,6 +630,72 @@ def independence_test(remove_array_tilt=None):
     print(report)
     print("=" * 60)
     return report
+
+
+def create_estimation_experiments_config():
+    """Write the estimation experiments config template to a path chosen by the user."""
+    answer = questionary.path(
+        "Where should the config be written?", default="estimation_experiments.yaml"
+    ).ask()
+    if not answer:
+        return None
+
+    dest = Path(answer).expanduser()
+    if dest.is_dir():
+        dest = dest / "estimation_experiments.yaml"
+    if (
+        dest.exists()
+        and not questionary.confirm(
+            f"{dest} already exists. Overwrite it?", default=False
+        ).ask()
+    ):
+        print(f"Kept existing {dest}.")
+        return dest
+
+    estimation.write_config_template(dest, overwrite=True)
+    print(f"Wrote {dest}. Edit it, then run 'run estimation experiments'.")
+    return dest
+
+
+def run_estimation_experiments():
+    """Run the F_phi / F_chi estimation experiments described by a config file."""
+    answer = questionary.path(
+        "Estimation experiments config:", default="estimation_experiments.yaml"
+    ).ask()
+    if not answer:
+        return None
+
+    try:
+        cfg = estimation.load_config(answer)
+    except (estimation.ConfigError, FileNotFoundError) as e:
+        print(f"Configuration error: {e}")
+        return None
+
+    print(f"Writing results to {cfg.output_dir}")
+    result = estimation.run_experiment(cfg, progress=lambda msg: print(f"  {msg}"))
+
+    with pd.option_context("display.width", 200, "display.max_columns", 20):
+        if result.fits:
+            print(
+                estimation.fit_table(result)[
+                    ["estimator", "ray_id", "GM", "GM_se", "phi_noise", "chi_noise"]
+                ].to_string(index=False, float_format="%.3g")
+            )
+        if result.synthetic is not None:
+            print(
+                estimation.synthetic_table(result)[
+                    [
+                        "estimator",
+                        "ray_id",
+                        "GM_ratio_median",
+                        "phi_bias_rms_decades",
+                        "chi_bias_rms_decades",
+                    ]
+                ].to_string(index=False, float_format="%.3g")
+            )
+    for path in result.written:
+        print(f"✓ wrote {path}")
+    return result
 
 
 def create_publication_figures_config():

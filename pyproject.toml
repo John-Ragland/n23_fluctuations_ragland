@@ -43,8 +43,15 @@ dependencies = [
   "cmps",
 ]
 
+[project.optional-dependencies]
+# nesma_param ocean model environments (theory_environments.nesma_beta0_environment)
+nesma = [
+  "nesma_param",
+]
+
 [tool.uv.sources]
 nescafe23 = { workspace = true }
+nesma_param = { workspace = true }
 pygenray = { git = "https://github.com/John-Ragland/pygenray", branch = "main" }
 cmps = { git = "https://github.com/John-Ragland/cmps", branch = "main" }
 
