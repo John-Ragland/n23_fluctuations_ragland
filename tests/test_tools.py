@@ -34,6 +34,7 @@ def test_F_phi_chi_is_a_density_per_cycle_per_meter():
         "Rf2": along_s(0.0),
         "drdt": np.full(n_s, ds),
         "dzdt": np.zeros(n_s),
+        "J": along_s(1e6),  # band reaches past the top of the grid
         "m_lo_max": 0.999 * m1 / (2 * np.pi),
         "m_hi_max": 1e6,
     }

@@ -1167,7 +1167,7 @@ def compute_F_phi_chi(
     jstar: float = 3,
     f: float = 9.216181213401561e-05,  # [rad/s]
     fresnel: bool = True,
-    dilation: bool = False,
+    per_point_band: bool = False,
 ):
     r"""
     Given the dictionary of ray variables, computed with `compute_ray_path_variables`, compute power spectral density of phase and log-amplitude ($F_\\phi$ and $F_\\chi$)
@@ -1176,6 +1176,16 @@ def compute_F_phi_chi(
     (m = π j N / N0B, j ≥ 1). They are returned as a one-sided density per cycle/m, i.e. multiplied by the
     Jacobian 2π, so they can be compared directly with the periodograms of `estimate_F_phi_chi` (sampled at
     9 m, so per cycle/m) and with the spectra plotted per cpm in Colosi (2016), Figs. 6.1 and 6.10.
+
+    By default (``per_point_band=False``) every point of the ray is integrated at every m, and the result is
+    masked after the integral to the receiver band ``rv["m_lo_max"] < m / 2π < rv["m_hi_max"]`` (the largest
+    mode-1 and mode-J wavenumbers along the ray, in cycles/m).
+
+    With ``per_point_band=True`` the band is applied inside the integral: each point s of the ray contributes
+    only over its own internal-wave band, mode 1 to mode J(s): $\pi N/N_0B \le m \le J \pi N/N_0B$, with $m$
+    the local wavenumber. The edges are the modes themselves (not half-integer bins), so $\int F_\phi dm$ in
+    the geometric limit is about 0.6 $\Phi^2$ of `compute_lambda_phi`, which sums the discrete modes
+    (Eq. 6.56): the continuous integral from mode 1 undercounts the mode-1-dominated sum.
 
     Parameters
     ----------
@@ -1192,26 +1202,25 @@ def compute_F_phi_chi(
     fresnel : bool
         whether to include the Fresnel filter, default is True, which is consistent with Colosi (2016) Eq. 6.51
         This is only done for the phase, log-amplitude remains unchanged
-    dilation : bool
-        whether to do change of variables on m to account for the dilation of vertical wavenumber
+    per_point_band : bool
+        whether to limit each point of the ray to its own band, mode 1 to mode J(s), inside the integral.
+        Default is False, which masks the integrated spectra to the receiver band [m_lo_max, m_hi_max].
 
     Returns
     -------
     F_phi : np.array
         array of one-sided phase power spectral density per cycle/m, $F_\\phi$ [rad$^2$ m], at each vertical
-        wavenumber in m
+        wavenumber in m. NaN outside the band.
     F_chi : np.array
         array of one-sided log-amplitude power spectral density per cycle/m, $F_\\chi$ [m], at each vertical
-        wavenumber in m
+        wavenumber in m. NaN outside the band.
     """
 
-    if dilation:
-        m_r = m.copy()  # save original m value (used for valid mask)
-        delta_zr = 2 * np.pi / m
-        delta_z = np.abs(rv["RT_zeta_1"])[:, None] * delta_zr
-        m = 2 * np.pi / delta_z  # overwrite m value
-    else:
-        m_r = m.copy()
+    if per_point_band:
+        # band of each point along the ray, mode 1 to mode J(s), in local wavenumber
+        m_low = (np.pi * rv["Nray"] / rv["N0B_ray"]).values[:, None]  # (s, 1)
+        m_high = rv["J"].values[:, None] * m_low
+        band = (m >= m_low) & (m <= m_high)  # (s, M)
 
     wc = 2 * np.pi * fc
     q0 = wc / 1500
@@ -1231,8 +1240,6 @@ def compute_F_phi_chi(
         )
     )
 
-    dilation_factor = 1 / np.abs(rv["RT_zeta_1"])[:, None] if dilation else 1
-
     if fresnel:
         F_phi_integrand = (
             8
@@ -1246,7 +1253,6 @@ def compute_F_phi_chi(
             * W.values[:, None]
             * (1 + np.cos(m**2 * rv["Rf2"].values[:, None] / (2 * np.pi)))
             * np.sqrt(rv["drdt"][:, None] ** 2 + rv["dzdt"][:, None] ** 2)
-            * dilation_factor
         )
     else:
         F_phi_integrand = (
@@ -1261,10 +1267,11 @@ def compute_F_phi_chi(
             * W.values[:, None]
             * 2
             * np.sqrt(rv["drdt"][:, None] ** 2 + rv["dzdt"][:, None] ** 2)
-            * dilation_factor
         )
-    # set nan values of integrand to zero
+    # set nan values of integrand, and points outside their band, to zero
     F_phi_integrand[np.isnan(F_phi_integrand)] = 0
+    if per_point_band:
+        F_phi_integrand = np.where(band, F_phi_integrand, 0)
 
     F_phi = scipy.integrate.simpson(F_phi_integrand, axis=0)
 
@@ -1280,19 +1287,24 @@ def compute_F_phi_chi(
         * W.values[:, None]
         * (1 - np.cos(m**2 * rv["Rf2"].values[:, None] / (2 * np.pi)))
         * np.sqrt(rv["drdt"][:, None] ** 2 + rv["dzdt"][:, None] ** 2)
-        * dilation_factor
     )
 
     F_chi_integrand[np.isnan(F_chi_integrand)] = 0
+    if per_point_band:
+        F_chi_integrand = np.where(band, F_chi_integrand, 0)
     F_chi = scipy.integrate.simpson(F_chi_integrand, axis=0)
 
     # Eq. 6.52 is a density per rad/m; convert to a density per cycle/m
     F_phi = 2 * np.pi * F_phi
     F_chi = 2 * np.pi * F_chi
 
-    valid_mask = (m_r[0] / (2 * np.pi) > rv["m_lo_max"]) & (
-        m_r[0] / (2 * np.pi) < rv["m_hi_max"]
-    )
+    if per_point_band:
+        # wavenumbers no point of the ray contributes to
+        valid_mask = band.any(axis=0)
+    else:
+        valid_mask = (m[0] / (2 * np.pi) > rv["m_lo_max"]) & (
+            m[0] / (2 * np.pi) < rv["m_hi_max"]
+        )
 
     # set invalid F_phi and F_chi values to nan
     F_phi[~valid_mask] = np.nan
@@ -1350,7 +1362,7 @@ def compute_wft_structure_function(
     jstar: float = 3,
     f: float = 9.216181213401561e-05,  # [rad/s]
     fresnel: bool = True,
-    dilation: bool = False,
+    per_point_band: bool = False,
 ):
     r"""
     Phase and log-amplitude structure functions of weak fluctuation theory, from the continuum spectra of
@@ -1376,8 +1388,9 @@ def compute_wft_structure_function(
         Coriolis parameter [rad/s]
     fresnel : bool
         whether to include the Fresnel filter, default is True, which is consistent with Colosi (2016) Eq. 6.51
-    dilation : bool
-        whether to do change of variables on m to account for the dilation of vertical wavenumber
+    per_point_band : bool
+        passed to `compute_F_phi_chi`: whether each point of the ray is limited to its own band inside the
+        integral, rather than masking the result to the receiver band. Default is False.
 
     Returns
     -------
@@ -1393,7 +1406,7 @@ def compute_wft_structure_function(
         jstar=jstar,
         f=f,
         fresnel=fresnel,
-        dilation=dilation,
+        per_point_band=per_point_band,
     )
 
     kernel = 1 - np.cos(2 * np.pi * m[None, :] * deltaz_r[:, None])  # (dzr, m)
@@ -1420,6 +1433,8 @@ def compute_lambda_phi(
         / (rv["Cray"].values[:, None] ** 2)
         * np.sqrt(rv["drdt"][:, None] ** 2 + rv["dzdt"][:, None] ** 2)
     )
+    # set non-finite values (e.g. N = 0) to zero
+    phi2_integrand[~np.isfinite(phi2_integrand)] = 0
     Phi2 = scipy.integrate.simpson(phi2_integrand, axis=0)
 
     lam_integrand = (
@@ -1433,6 +1448,7 @@ def compute_lambda_phi(
         / (2 * np.pi)
         * np.sqrt(rv["drdt"][:, None] ** 2 + rv["dzdt"][:, None] ** 2)
     )
+    lam_integrand[~np.isfinite(lam_integrand)] = 0
     Lamda = scipy.integrate.simpson(lam_integrand, axis=0)
 
     return Lamda, Phi2
@@ -1492,60 +1508,6 @@ def compute_phase_structure_integrand(
     return integrand
 
 
-def compute_phase_structure_integrand_no_dilation(
-    rv: dict,
-    deltaz_r: np.array,
-    fc: float = 250,
-):
-    r"""
-    Given the ray variables, calculate the phase structure function integrand as a function of vertical seperation $\delta z_r$ and range.
-
-    Parameters
-    ----------
-    rv : dict
-        ray variables dictionary, computed with `compute_ray_path_variables`
-    deltaz_r : np.array
-        array of vertical separations [m] at which to compute phase structure function
-    fc : float
-        acoustic center frequency [1/s]
-
-    Returns
-    -------
-    integrand : np.array
-        array of phase structure function integrand values at each vertical separation in deltaz_r and range value
-    """
-
-    omegac = 2 * np.pi * fc
-
-    ## Compute phase structure function at deltaz_r locations
-    mj = (
-        np.pi
-        * rv["j"][None, :, None]
-        * rv["Nray"].values[:, None, None]
-        / rv["N0B_ray"].values[:, None, None]
-    )  # (s,j,1)
-
-    summand = rv["H"].T[:, :, None] * (
-        (1 - np.cos(mj * deltaz_r[None, None, :])) / rv["j"][None, :, None]
-    )  # (s,j,dzr)
-    # set any nan values to zero
-    summand = np.where(np.isfinite(summand), summand, 0)
-
-    integrand1 = (
-        2 * omegac**2 * rv["mu2"] * rv["L_p"] / (rv["Cray"] ** 2 * rv["mean_jn1"])
-    ).values
-    integrand = (
-        integrand1[:, None]
-        * np.sum(summand, axis=1)
-        * np.sqrt(rv["drdt"] ** 2 + rv["dzdt"] ** 2)[:, None]
-    )  # (s,dzr)
-
-    # set any nan values to zero
-    integrand = np.where(np.isfinite(integrand), integrand, 0)
-
-    return integrand
-
-
 def compute_phase_structure_function(
     rv: dict,
     deltaz_r: np.array,
@@ -1570,35 +1532,6 @@ def compute_phase_structure_function(
     """
 
     integrand = compute_phase_structure_integrand(rv, deltaz_r, fc)
-    D_dzr = scipy.integrate.simpson(integrand, axis=0)
-
-    return D_dzr, integrand
-
-
-def compute_phase_structure_function_no_dilation(
-    rv: dict,
-    deltaz_r: np.array,
-    fc: float = 250,
-):
-    r"""
-    Given the ray variables, calculate the phase structure function as a function of vertical seperation $\delta z_r$.
-
-    Parameters
-    ----------
-    rv : dict
-        ray variables dictionary, computed with `compute_ray_path_variables`
-    deltaz_r : np.array
-        array of vertical separations [m] at which to compute phase structure function
-    fc : float
-        acoustic center frequency [1/s]
-
-    Returns
-    -------
-    D_dzr : np.array
-        array of phase structure function values at each vertical separation in deltaz_r
-    """
-
-    integrand = compute_phase_structure_integrand_no_dilation(rv, deltaz_r, fc)
     D_dzr = scipy.integrate.simpson(integrand, axis=0)
 
     return D_dzr, integrand
@@ -2849,7 +2782,7 @@ def independence_test_vertical_coherence(
 
 
 def phi_chi_spectrum_model(
-    m, GM, phi_noise, chi_noise, ray_id, all_paths=False, fresnel=True, dilation=False
+    m, GM, phi_noise, chi_noise, ray_id, all_paths=False, fresnel=True
 ):
     """
     phi_chi_spectrum_model - compute model of F_phi and F_chi, GM internal waves, WFT, and white observational noise
@@ -2871,6 +2804,8 @@ def phi_chi_spectrum_model(
         ray id for which to compute the model ('+7', '-7', '+6', '-6')
     all_paths : bool, optional
         whether to compute the model for all paths (default: False)
+    fresnel : bool, optional
+        whether to include the Fresnel filter, passed to `compute_F_phi_chi` (default: True)
     """
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -2885,9 +2820,7 @@ def phi_chi_spectrum_model(
             F_phis_noise = []
             F_chis_noise = []
             for k in range(len(rvs[ray_id])):
-                F_phi, F_chi = compute_F_phi_chi(
-                    rvs[ray_id][k], m, fresnel=fresnel, dilation=dilation
-                )
+                F_phi, F_chi = compute_F_phi_chi(rvs[ray_id][k], m, fresnel=fresnel)
                 F_phis.append(F_phi)
                 F_chis.append(F_chi)
 
@@ -2896,9 +2829,7 @@ def phi_chi_spectrum_model(
 
             return F_phis_noise, F_chis_noise, F_phis, F_chis
         else:
-            F_phi, F_chi = compute_F_phi_chi(
-                rvs[ray_id][0], m, fresnel=fresnel, dilation=dilation
-            )
+            F_phi, F_chi = compute_F_phi_chi(rvs[ray_id][0], m, fresnel=fresnel)
 
             F_phi_noise = F_phi + phi_noise
             F_chi_noise = F_chi + chi_noise

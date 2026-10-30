@@ -96,6 +96,7 @@ def test_wft_structure_function_without_fresnel_filter():
         "Rf2": along_s(0.0),
         "drdt": np.full(n_s, 100.0),
         "dzdt": np.zeros(n_s),
+        "J": along_s(1e6),  # band reaches past the top of the grid
         "m_lo_max": 0.999 * m1 / (2 * np.pi),
         "m_hi_max": 1e6,
     }

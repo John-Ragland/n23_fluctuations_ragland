@@ -70,8 +70,20 @@ uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dash
     `fit_F_phi_chis` and `F_phi_chi_ducted` inherit that, so only the x-axis is converted (`m / 2π`) when
     plotting. Before 2026-10-23 the Jacobian was missing: the WFT curves were 2π too low and the fitted GM
     levels about 2π too high. `tests/test_tools.py` pins the convention. The spectra (Eq. 6.26/6.52, local
-    straight-ray, no wavenumber dilation) and `compute_phase_structure_function` (Eq. 7.50, with the ξ₁
-    dilation) are different approximations, so they need not agree on one GM level.
+    straight-ray, no wavenumber dilation) and `compute_phase_structure_function` (Eq. 7.50,
+    with the ξ₁ dilation) are different approximations, so they need not agree on one GM level.
+  - `compute_F_phi_chi` has two band treatments. The default (`per_point_band=False`) integrates every
+    point of the ray at every m and then masks the result to the receiver band `[m_lo_max, m_hi_max]`
+    (the largest mode-1 / mode-J wavenumbers along the ray). With `per_point_band=True` the band is applied
+    inside the integral: each point s contributes only over its own band, mode 1 to mode J(s)
+    (πN/N₀B ≤ m ≤ JπN/N₀B, in local m), and NaN marks only where no point contributes.
+    `compute_wft_structure_function` passes `per_point_band` through. Every other caller (fits, figures,
+    `theory_environments`, `estimation`) uses the default. With the per-point band the edges are the modes, **deliberately not half-integer bins**
+    (the user's choice, the literal reading of Eq. 6.52). Because of that, in the geometric limit
+    ∫F_φ dm ≈ 0.61 Φ² of `compute_lambda_phi` on every ducted ray, and the WFT structure function saturates
+    at ≈0.61 × 2Φ². Φ² is the discrete mode sum of Eq. 6.56, and the continuous integral from mode 1
+    undercounts its mode-1-dominated sum (edge factor 0.68 × H normalization 0.894). A ratio far from
+    0.61, or one that varies between rays, would indicate a bug.
   - `transmission_independence_test(samples)` supports the jackknife's assumption that the hourly
     transmissions are independent. It compares the lag-1 autocorrelation of per-transmission estimates
     with ±2/√M and gives a permutation p-value. `independence_test_F_phi_chi` (log-periodograms) and

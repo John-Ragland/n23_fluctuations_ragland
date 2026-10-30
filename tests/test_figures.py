@@ -69,6 +69,14 @@ def test_remove_array_tilt_defaults_on(tmp_path):
     assert figures.load_config(path).remove_array_tilt is False
 
 
+def test_dilation_is_not_a_config_key(tmp_path):
+    """The dilation option was removed, so an old config that still sets it is rejected."""
+    path = tmp_path / "config.yaml"
+    path.write_text("dilation: true\n")
+    with pytest.raises(figures.ConfigError):
+        figures.load_config(path)
+
+
 def test_wavefront_values_follow_remove_array_tilt(monkeypatch):
     monkeypatch.setattr(figures, "_wavefront_values", lambda: "with tilt")
     monkeypatch.setattr(
