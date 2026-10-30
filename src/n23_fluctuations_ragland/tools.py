@@ -2234,6 +2234,233 @@ def coherence_lengths_latex_table(observed: dict, theory: dict) -> str:
     return "\n".join(lines)
 
 
+def structure_function_from_coherence(vc: dict, max_lag: float = 126.0):
+    r"""
+    Observed wave structure function $D(\Delta z) = -2 \ln \mathrm{VC}(\Delta z)$ of one ray, with
+    leave-one-transmission-out jackknife variances.
+
+    VC is the vertical coherence $\hat{C} / A_0$ of `jackknife_vertical_coherence`, and each jackknife sample
+    is $-2 \ln (\hat{C}_k / A_{0,k})$, so the variance includes the uncertainty of $A_0$. Since
+    $\langle p_1 p_2^* \rangle = \exp(-D/2)$, D is the structure function of the whole wave, $D_\phi + D_\chi$ in
+    WFT, which is what the path integral `compute_phase_structure_function` predicts.
+
+    Only the lags $0 < \Delta z \le$ `max_lag` where VC and every jackknife sample are positive are kept. The
+    default 126 m is half the 28-element aperture: beyond it few element pairs are left and VC falls toward
+    zero, where the logarithm is unstable.
+
+    Parameters
+    ----------
+    vc : dict
+        output of `jackknife_vertical_coherence`
+    max_lag : float
+        largest lag [m]
+
+    Returns
+    -------
+    sf : dict
+        - lags : lags [m]
+        - D : structure function [rad$^2$] at `lags`
+        - D_var : jackknife variance of D
+        - D_jk : leave-one-out estimates, of shape (transmission, lag)
+    """
+    lags = np.asarray(vc["lags"], dtype=float)
+    ratio_jk = vc["MC_jk"] / vc["A0_jk"][:, None]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        keep = (
+            (lags > 0)
+            & (lags <= max_lag)
+            & (vc["VC"] > 0)
+            & np.all(ratio_jk > 0, axis=0)
+        )
+        D = -2 * np.log(vc["VC"][keep])
+        D_jk = -2 * np.log(ratio_jk[:, keep])
+
+    return {"lags": lags[keep], "D": D, "D_var": _jackknife_var(D_jk), "D_jk": D_jk}
+
+
+def fit_GM_structure_function(sf: dict, model, GM_bounds=(1e-2, 1e2)):
+    r"""
+    Weighted least squares fit of a GM energy level to an observed structure function.
+
+    The cost is $\sum_k (D_\mathrm{model}(\Delta z_k; \mathrm{GM}) - D_k)^2 / \mathrm{Var}[D_k]$, minimized over
+    $\log_{10} \mathrm{GM}$. Lags with zero jackknife variance are left out. The model is evaluated at every
+    step, because the GM level also sets the mode cut-off J, so D is only nearly linear in GM.
+
+    The standard error is a leave-one-transmission-out jackknife of the fit linearized at its optimum,
+    $\mathrm{GM}_k = \widehat{\mathrm{GM}} + \sum w g (D_k - D) / \sum w g^2$ with
+    $g = D_\mathrm{model} / \widehat{\mathrm{GM}}$, which avoids refitting the model 23 times. It is exact
+    when D is linear in GM.
+
+    Parameters
+    ----------
+    sf : dict
+        output of `structure_function_from_coherence`
+    model : callable
+        ``model(GM)`` returns the model structure function [rad$^2$] at ``sf["lags"]``
+    GM_bounds : tuple
+        bounds of the GM level
+
+    Returns
+    -------
+    fit : dict
+        - GM : fitted GM energy level
+        - GM_std : its jackknife standard error
+        - cost : the weighted sum of squares at the optimum
+        - n_lags : number of lags in the fit
+        - D_model : the model at the fitted level, at ``sf["lags"]``
+    """
+    valid = np.isfinite(sf["D"]) & np.isfinite(sf["D_var"]) & (sf["D_var"] > 0)
+    w = 1 / sf["D_var"][valid]
+
+    def cost(log_GM):
+        return float(np.sum(w * (model(10**log_GM)[valid] - sf["D"][valid]) ** 2))
+
+    result = optimize.minimize_scalar(
+        cost,
+        bounds=np.log10(GM_bounds),
+        method="bounded",
+        options={"xatol": 1e-4},
+    )
+    GM = float(10**result.x)
+
+    D_model = np.asarray(model(GM), dtype=float)
+    g = D_model[valid] / GM
+    GM_jk = GM + (sf["D_jk"][:, valid] - sf["D"][valid]) @ (w * g) / np.sum(w * g**2)
+
+    return {
+        "GM": GM,
+        "GM_std": float(np.sqrt(_jackknife_var(GM_jk))),
+        "cost": float(result.fun),
+        "n_lags": int(np.sum(valid)),
+        "D_model": D_model,
+    }
+
+
+def fit_GM_vertical_coherence(
+    wavefront_values: dict,
+    ray_ids: list | None = None,
+    dz: float = 9.0,
+    max_lag: float = 126.0,
+    envi_field: xr.Dataset | None = None,
+    ray_run: dict | None = None,
+):
+    r"""
+    Fit the GM energy level of the path integral structure function to the observed vertical coherence of
+    each ray, the coherence counterpart of the spectral fit `fit_F_phi_chis`.
+
+    The observed $D = -2 \ln \mathrm{VC}$ is from `structure_function_from_coherence`, and the model is
+    `compute_phase_structure_function` on the first eigenray pair with $\zeta_0 = 7.3 \sqrt{\mathrm{GM}}$ m, as in `phi_chi_spectrum_model`. The fit is
+    `fit_GM_structure_function`.
+
+    Parameters
+    ----------
+    wavefront_values : dict
+        wavefront values for each ray ID, of shape (transmission, hydrophone), from `get_wavefront_values`
+    ray_ids : list
+        ray IDs to fit. Default is `DUCTED_RAY_IDS`.
+    dz : float
+        hydrophone spacing [m]
+    max_lag : float
+        largest lag [m] in the fit, see `structure_function_from_coherence`
+    envi_field : xr.Dataset, optional
+        environment passed to `compute_n23_ray_variables`. Default is `fctd_environment()`, computed once.
+    ray_run : dict, optional
+        ray run passed to `compute_n23_ray_variables`. Default is the cached ``ray_run_forward_back.pkl``,
+        loaded once.
+
+    Returns
+    -------
+    fits : dict
+        for each ray ID, the output of `fit_GM_structure_function` plus the observed ``lags``, ``D`` and
+        ``D_var``
+    """
+    if ray_ids is None:
+        ray_ids = DUCTED_RAY_IDS
+    if envi_field is None:
+        envi_field = fctd_environment()
+    if ray_run is None:
+        with (get_data_dir() / "dataproducts" / "ray_run_forward_back.pkl").open(
+            "rb"
+        ) as f:
+            ray_run = pickle.load(f)
+
+    fits = {}
+    for ray_id in ray_ids:
+        sf = structure_function_from_coherence(
+            jackknife_vertical_coherence(wavefront_values[ray_id], dz), max_lag
+        )
+
+        def model(GM, ray_id=ray_id, lags=sf["lags"]):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                rv = compute_n23_ray_variables(
+                    zeta0=7.3 * np.sqrt(GM),
+                    ray_ids=[ray_id],
+                    envi_field=envi_field,
+                    ray_run=ray_run,
+                )[ray_id][0]
+                return compute_phase_structure_function(rv, lags)[0]
+
+        fit = fit_GM_structure_function(sf, model)
+        fits[ray_id] = {**fit, "lags": sf["lags"], "D": sf["D"], "D_var": sf["D_var"]}
+
+    return fits
+
+
+def GM_levels_latex_table(spectral: dict | None, coherence: dict | None) -> str:
+    r"""
+    Format the GM energy levels fitted to the $F_\phi$, $F_\chi$ spectra (WFT) and to the vertical coherence
+    (path integral) as a LaTeX (booktabs) table.
+
+    Parameters
+    ----------
+    spectral : dict or None
+        output of `jackknife_F_phi_chi_fit`, or None if the fit has not been made
+    coherence : dict or None
+        output of `fit_GM_vertical_coherence`, or None
+
+    Returns
+    -------
+    table : str
+        LaTeX table. Levels are reported $\pm$ their jackknife standard error. Missing values are `--`.
+    """
+
+    def fmt(fits, ray_id):
+        if fits is None or ray_id not in fits or not np.isfinite(fits[ray_id]["GM"]):
+            return "--"
+        return f"{fits[ray_id]['GM']:.2f} $\\pm$ {fits[ray_id]['GM_std']:.2f}"
+
+    ray_ids = list(DUCTED_RAY_IDS)
+    for fits in (spectral, coherence):
+        ray_ids += [r for r in (fits or {}) if r not in ray_ids]
+
+    rows = [
+        f"${ray_id}$ & {fmt(spectral, ray_id)} & {fmt(coherence, ray_id)} \\\\"
+        for ray_id in ray_ids
+    ]
+
+    lines = [
+        r"\begin{table}",
+        r"\centering",
+        r"\begin{tabular}{lrr}",
+        r"\toprule",
+        r"Ray ID & $F_\phi$, $F_\chi$ (WFT) & VC (path integral) \\",
+        r"\midrule",
+        *rows,
+        r"\bottomrule",
+        r"\end{tabular}",
+        (
+            r"\caption{GM energy levels fitted to the observed phase and log-amplitude spectra (WFT, Colosi"
+            r" 2016 Eq.~6.52, local straight-ray) and to the vertical coherence ($D = -2 \ln \mathrm{VC}$,"
+            r" path integral, Eq.~7.50, with the ray-tube separation $\xi_1$), $\pm$ their"
+            r" leave-one-transmission-out jackknife standard errors.}"
+        ),
+        r"\label{tab:GM_levels}",
+        r"\end{table}",
+    ]
+    return "\n".join(lines)
+
+
 def run_rays(
     num_rays: int | None = None,
     source_depth: float | None = None,
@@ -2906,3 +3133,105 @@ def fit_F_phi_chis(m_data, F_phi_lm, F_chi_lm, F_phi_ls, F_chi_ls):
         )
 
     return results
+
+
+def jackknife_F_phi_chi_fit(
+    results: dict,
+    m_data: np.array,
+    F_phi_data: dict,
+    F_chi_data: dict,
+    F_phi_ls: dict,
+    F_chi_ls: dict,
+    model=None,
+    rel_step: float = 1e-2,
+):
+    r"""
+    Leave-one-transmission-out jackknife standard errors of the GM and noise levels of `fit_F_phi_chis`.
+
+    Refitting the model 23 times per ray is slow, since every model evaluation re-traces the rays, so the
+    fit is linearized at its optimum $\hat\theta$ (Gauss-Newton). Leaving out transmission k changes the log-mean data by
+    $\Delta y_k = \overline{\log_{10} F}_{(k)} - \overline{\log_{10} F}$ (the bias correction is a constant and
+    cancels), and the parameters by $\Delta\theta_k = (J^T W J)^{-1} J^T W \Delta y_k$, with
+    $J = \partial \log_{10} F_\mathrm{model} / \partial \theta$ and W the fit weights $1 / \log_{10}^2$ of the
+    jackknife SE factors, stacked over $F_\phi$ and $F_\chi$. The GM column of J is a central difference of
+    the model, and the noise columns are analytic. A parameter on its bound (a noise level of 0, or GM at
+    the lower bound 1e-3) is held fixed and gets a NaN standard error.
+
+    Parameters
+    ----------
+    results : dict
+        output of `fit_F_phi_chis`, for each ray ID a result with ``x = [GM, phi_noise, chi_noise]``
+    m_data : np.array
+        wavenumbers [cycles/m] of the spectra, from `estimate_F_phi_chi`
+    F_phi_data, F_chi_data : dict
+        per-transmission periodograms, shape (transmission, wavenumber), from `estimate_F_phi_chi`
+    F_phi_ls, F_chi_ls : dict
+        jackknife SE factors used as the fit weights, from `estimate_F_phi_chi`
+    model : callable, optional
+        model spectra with the signature of `phi_chi_spectrum_model` (default)
+    rel_step : float
+        relative step in GM of the central difference
+
+    Returns
+    -------
+    jackknife : dict
+        for each ray ID, a dict with ``GM``, ``GM_std``, ``phi_noise``, ``phi_noise_std``, ``chi_noise``,
+        ``chi_noise_std`` and the leave-one-out ``params_jk`` of shape (transmission, 3)
+    """
+    if model is None:
+        model = phi_chi_spectrum_model
+    m_radm = m_data * 2 * np.pi
+    n = len(m_data)
+
+    jackknife = {}
+    for ray_id, result in results.items():
+        GM, phi_noise, chi_noise = (float(p) for p in result.x)
+
+        def log_model(GM, ray_id=ray_id, phi_noise=phi_noise, chi_noise=chi_noise):
+            F_phi, F_chi, _, _ = model(m_radm, GM, phi_noise, chi_noise, ray_id)
+            return np.log10(np.concatenate([F_phi, F_chi]))
+
+        log_F = np.concatenate(
+            [np.log10(F_phi_data[ray_id]), np.log10(F_chi_data[ray_id])], axis=1
+        )  # (M, 2n)
+        M = log_F.shape[0]
+        dy = (np.sum(log_F, axis=0) - log_F) / (M - 1) - np.mean(log_F, axis=0)
+        sigma = np.concatenate([np.log10(F_phi_ls[ray_id]), np.log10(F_chi_ls[ray_id])])
+        w = 1 / sigma**2
+
+        F_model = 10 ** log_model(GM)
+        J_GM = (log_model(GM * (1 + rel_step)) - log_model(GM * (1 - rel_step))) / (
+            2 * GM * rel_step
+        )
+        J_phi = np.r_[1 / (np.log(10) * F_model[:n]), np.zeros(n)]
+        J_chi = np.r_[np.zeros(n), 1 / (np.log(10) * F_model[n:])]
+        J = np.stack([J_GM, J_phi, J_chi], axis=1)
+
+        free = np.array([GM > 1e-3, phi_noise > 0, chi_noise > 0])
+        rows = (
+            np.all(np.isfinite(J), axis=1)
+            & np.isfinite(w)
+            & np.all(np.isfinite(dy), axis=0)
+        )
+        Jf = J[rows][:, free]
+        Wdy = w[rows, None] * dy[:, rows].T  # (rows, M)
+        d_free = np.linalg.solve(
+            Jf.T @ (w[rows, None] * Jf), Jf.T @ Wdy
+        ).T  # (M, n_free)
+
+        d_params = np.zeros((M, 3))
+        d_params[:, free] = d_free
+        params_jk = np.array([GM, phi_noise, chi_noise]) + d_params
+        std = np.where(free, np.sqrt(_jackknife_var(params_jk)), np.nan)
+
+        jackknife[ray_id] = {
+            "GM": GM,
+            "GM_std": float(std[0]),
+            "phi_noise": phi_noise,
+            "phi_noise_std": float(std[1]),
+            "chi_noise": chi_noise,
+            "chi_noise_std": float(std[2]),
+            "params_jk": params_jk,
+        }
+
+    return jackknife

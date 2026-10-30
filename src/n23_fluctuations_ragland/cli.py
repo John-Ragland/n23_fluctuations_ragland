@@ -85,6 +85,7 @@ def main():
             "source geometry sweep",
             "ɸ χ GM least squares fit",
             "coherence lengths (observed vs. GM)",
+            "GM levels (spectra vs. coherence)",
             "transmission independence test",
             "create estimation experiments config",
             "run estimation experiments",
@@ -114,6 +115,8 @@ def main():
         phi_chi_LS_fit()
     elif choice == "coherence lengths (observed vs. GM)":
         coherence_lengths()
+    elif choice == "GM levels (spectra vs. coherence)":
+        gm_levels()
     elif choice == "transmission independence test":
         independence_test()
     elif choice == "create estimation experiments config":
@@ -527,7 +530,8 @@ def phi_chi_LS_fit(remove_array_tilt=None, force_overwrite=False):
     if remove_array_tilt is None:
         remove_array_tilt = _ask_remove_array_tilt()
     _compute_phi_chi_LS_fit(
-        remove_array_tilt=remove_array_tilt, force_overwrite=force_overwrite
+        remove_array_tilt=remove_array_tilt,
+        force_overwrite=force_overwrite,
     )
 
 
@@ -567,6 +571,51 @@ def coherence_lengths(remove_array_tilt=None):
     theory = tools.compute_theoretical_coherence_lengths()
 
     table = tools.coherence_lengths_latex_table(observed, theory)
+    print("=" * 60)
+    print(table)
+    print("=" * 60)
+    return table
+
+
+def gm_levels(remove_array_tilt=None):
+    """
+    Print a LaTeX table of the GM energy levels fitted to the observed ɸ and χ spectra (WFT) and to the
+    vertical coherence (path integral), ± their jackknife standard errors.
+
+    The spectral level is read from ``phi_chi_LS_fit[_tilt_removed].pkl`` of the "ɸ χ GM least
+    squares fit" step (shown as -- if it has not been made), and its standard error is the linearized
+    jackknife `tools.jackknife_F_phi_chi_fit`. The coherence level is fitted here
+    (`tools.fit_GM_vertical_coherence`), to D = -2 ln VC of the same wavefront values.
+
+    The user is asked whether to use the wavefront values with the array tilt removed when
+    `remove_array_tilt` is None.
+    """
+    if remove_array_tilt is None:
+        remove_array_tilt = _ask_remove_array_tilt()
+
+    wavefront_values = _load_wavefront_values(remove_array_tilt)
+
+    path = tools.phi_chi_LS_fit_path(remove_array_tilt)
+    if path.exists():
+        with path.open("rb") as f:
+            results = pickle.load(f)
+        print("Jackknifing the ɸ χ GM fit...")
+        m_data, F_phi_data, F_chi_data, _, F_phi_ls, _, F_chi_ls = (
+            tools.estimate_F_phi_chi(remove_array_tilt=remove_array_tilt)
+        )
+        spectral = tools.jackknife_F_phi_chi_fit(
+            results, m_data, F_phi_data, F_chi_data, F_phi_ls, F_chi_ls
+        )
+    else:
+        print(
+            f"{path.name} not found; run 'ɸ χ GM least squares fit' to fill that column."
+        )
+        spectral = None
+
+    print("Fitting GM to the vertical coherence...")
+    coherence = tools.fit_GM_vertical_coherence(wavefront_values)
+
+    table = tools.GM_levels_latex_table(spectral, coherence)
     print("=" * 60)
     print(table)
     print("=" * 60)

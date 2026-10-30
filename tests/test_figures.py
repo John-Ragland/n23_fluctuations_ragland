@@ -161,3 +161,28 @@ def test_label_panels_rejects_bad_locations():
     with pytest.raises(ValueError, match="unknown panel label location"):
         figures.label_panels(axes, "top middle")
     plt.close(fig)
+
+
+def test_spectra_model_defaults_to_fit(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("{}\n")
+    assert figures.load_config(path).spectra_model == "fit"
+    path.write_text("spectra_model: gm_levels\n")
+    assert figures.load_config(path).spectra_model == "gm_levels"
+    path.write_text("spectra_model: 3xGM\n")
+    with pytest.raises(figures.ConfigError):
+        figures.load_config(path)
+
+
+def test_gm_levels_config(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("{}\n")
+    assert figures.load_config(path).gm_levels == (1.0, 2.0)
+    path.write_text("gm_levels: [1]\n")
+    assert figures.load_config(path).gm_levels == (1.0,)
+    path.write_text("gm_levels: [0.5, 3]\n")
+    assert figures.load_config(path).gm_levels == (0.5, 3.0)
+    for bad in ["[]", "[1, 2, 3]", "[0]", "[-1]", "1", "[true]", "[one]"]:
+        path.write_text(f"gm_levels: {bad}\n")
+        with pytest.raises(figures.ConfigError):
+            figures.load_config(path)

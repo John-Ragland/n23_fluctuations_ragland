@@ -26,6 +26,7 @@ def test_cli_imports():
         "create_publication_figures_config",
         "generate_publication_figures",
         "coherence_lengths",
+        "gm_levels",
         "independence_test",
     ]:
         assert hasattr(cli, name), f"cli.{name} is missing"
@@ -53,6 +54,11 @@ def test_tools_has_required_functions():
         "estimate_observed_coherence_lengths",
         "compute_theoretical_coherence_lengths",
         "coherence_lengths_latex_table",
+        "structure_function_from_coherence",
+        "fit_GM_structure_function",
+        "fit_GM_vertical_coherence",
+        "GM_levels_latex_table",
+        "jackknife_F_phi_chi_fit",
     ]
     for name in required:
         assert hasattr(tools, name), f"tools.{name} is missing"
@@ -226,6 +232,171 @@ def test_coherence_lengths_latex_table():
     assert rows[1] == "$+7$ & -- & 50.0 $\\pm$ 4.2 & -- & 120.0 & -- \\\\"
 
 
+def test_menu_has_gm_levels_option():
+    """The interactive menu offers the GM levels table."""
+    import inspect
+
+    import n23_fluctuations_ragland.cli as cli_mod
+
+    source = inspect.getsource(cli_mod.main)
+    assert source.count('"GM levels (spectra vs. coherence)"') == 2
+
+
+def test_structure_function_from_coherence():
+    """D = -2 ln VC on the positive lags up to max_lag, jackknifed through MC_k / A0_k."""
+    import numpy as np
+
+    from n23_fluctuations_ragland import tools
+
+    rng = np.random.default_rng(2)
+    X = 6e5 * _simulate_snapshots(rng, 23, 28, z0=10.0, t0=1e-6, noise_std=0.3)
+    vc = tools.jackknife_vertical_coherence(X, 9.0)
+
+    sf = tools.structure_function_from_coherence(vc, max_lag=126.0)
+
+    assert sf["lags"][0] == 9.0
+    assert sf["lags"][-1] <= 126.0
+    keep = np.isin(vc["lags"], sf["lags"])
+    np.testing.assert_allclose(sf["D"], -2 * np.log(vc["VC"][keep]))
+    np.testing.assert_allclose(
+        sf["D_var"],
+        tools._jackknife_var(-2 * np.log(vc["MC_jk"][:, keep] / vc["A0_jk"][:, None])),
+    )
+    assert sf["D_jk"].shape == (23, len(sf["lags"]))
+
+
+def test_fit_GM_structure_function_recovers_linear_level():
+    """With D linear in GM, the fit recovers GM and the linearized jackknife is the exact refit jackknife."""
+    import numpy as np
+
+    from n23_fluctuations_ragland import tools
+
+    rng = np.random.default_rng(3)
+    lags = 9.0 * np.arange(1, 15)
+    D1 = (lags / 100) ** 2  # model at GM = 1
+    D_jk = 2.5 * D1 + 0.01 * rng.standard_normal((23, len(lags)))
+    D = D_jk.mean(axis=0)
+    sf = {"lags": lags, "D": D, "D_var": tools._jackknife_var(D_jk), "D_jk": D_jk}
+
+    fit = tools.fit_GM_structure_function(sf, lambda GM: GM * D1)
+
+    w = 1 / sf["D_var"]
+    np.testing.assert_allclose(
+        fit["GM"], np.sum(w * D * D1) / np.sum(w * D1**2), rtol=1e-4
+    )
+    assert np.isclose(fit["GM"], 2.5, rtol=0.05)
+    GM_jk = D_jk @ (w * D1) / np.sum(w * D1**2)
+    np.testing.assert_allclose(
+        fit["GM_std"], np.sqrt(tools._jackknife_var(GM_jk)), rtol=1e-3
+    )
+    assert fit["n_lags"] == len(lags)
+
+
+def test_GM_levels_latex_table():
+    """WFT and coherence GM levels per ray with their standard errors, missing fits as --."""
+    from n23_fluctuations_ragland import tools
+
+    spectral = {"-7": {"GM": 1.933, "GM_std": 0.497}}
+    coherence = {"-7": {"GM": 0.744, "GM_std": 0.206}}
+    table = tools.GM_levels_latex_table(spectral, coherence)
+
+    rows = [line for line in table.splitlines() if line.startswith("$")]
+    assert [row.split(" & ")[0] for row in rows] == ["$+7$", "$-7$", "$+6$", "$-6$"]
+    assert rows[1] == "$-7$ & 1.93 $\\pm$ 0.50 & 0.74 $\\pm$ 0.21 \\\\"
+    assert rows[0] == "$+7$ & -- & -- \\\\"
+
+    rows = [
+        line
+        for line in tools.GM_levels_latex_table(None, coherence).splitlines()
+        if line.startswith("$-7$")
+    ]
+    assert rows == ["$-7$ & -- & 0.74 $\\pm$ 0.21 \\\\"]
+
+
+def test_jackknife_F_phi_chi_fit_matches_refit():
+    """The linearized jackknife of the spectral fit is close to refitting without each transmission."""
+    from types import SimpleNamespace
+
+    import numpy as np
+    from scipy import optimize
+
+    from n23_fluctuations_ragland import tools
+
+    rng = np.random.default_rng(4)
+    m_data = np.arange(1, 15) / (28 * 9)
+    A = 0.02 * m_data**-1.5  # F_phi at GM = 1, cheap stand-in for the WFT model
+    B = 0.002 * m_data**-0.5
+
+    def model(m, GM, phi_noise, chi_noise, ray_id):
+        return GM * A + phi_noise, GM * B + chi_noise, GM * A, GM * B
+
+    M = 23
+    dof = tools._periodogram_dof(28, len(m_data))
+    F_phi = (2.0 * A + 1.0) * rng.chisquare(2, (M, len(m_data))) / 2
+    F_chi = (2.0 * B + 0.1) * rng.chisquare(2, (M, len(m_data))) / 2
+
+    def fit(F_phi, F_chi):
+        phi_lm, phi_ls = tools._jackknife_log_mean(F_phi, dof)
+        chi_lm, chi_ls = tools._jackknife_log_mean(F_chi, dof)
+
+        def cost(p):
+            Fp, Fc, _, _ = model(m_data, *p, "-7")
+            return np.sum(
+                (np.log10(Fp) - np.log10(phi_lm)) ** 2 / np.log10(phi_ls) ** 2
+            ) + np.sum((np.log10(Fc) - np.log10(chi_lm)) ** 2 / np.log10(chi_ls) ** 2)
+
+        return (
+            optimize.minimize(
+                cost,
+                [1, 1, 0.1],
+                method="Nelder-Mead",
+                options={"xatol": 1e-8, "fatol": 1e-10},
+            ),
+            phi_ls,
+            chi_ls,
+        )
+
+    result, phi_ls, chi_ls = fit(F_phi, F_chi)
+    jk = tools.jackknife_F_phi_chi_fit(
+        {"-7": SimpleNamespace(x=result.x)},
+        m_data,
+        {"-7": F_phi},
+        {"-7": F_chi},
+        {"-7": phi_ls},
+        {"-7": chi_ls},
+        model=model,
+    )["-7"]
+
+    # exact refit jackknife, with the weights held at the full-data values as in the linearization
+    def fit_fixed_weights(F_phi_k, F_chi_k):
+        phi_lm = tools._jackknife_log_mean(F_phi_k, dof)[0]
+        chi_lm = tools._jackknife_log_mean(F_chi_k, dof)[0]
+
+        def cost(p):
+            Fp, Fc, _, _ = model(m_data, *p, "-7")
+            return np.sum(
+                (np.log10(Fp) - np.log10(phi_lm)) ** 2 / np.log10(phi_ls) ** 2
+            ) + np.sum((np.log10(Fc) - np.log10(chi_lm)) ** 2 / np.log10(chi_ls) ** 2)
+
+        return optimize.minimize(
+            cost,
+            result.x,
+            method="Nelder-Mead",
+            options={"xatol": 1e-8, "fatol": 1e-10},
+        ).x
+
+    GM_refit = np.array(
+        [
+            fit_fixed_weights(np.delete(F_phi, k, 0), np.delete(F_chi, k, 0))[0]
+            for k in range(M)
+        ]
+    )
+    assert jk["params_jk"].shape == (M, 3)
+    assert np.isclose(jk["GM"], result.x[0])
+    np.testing.assert_allclose(jk["params_jk"][:, 0], GM_refit, rtol=0.02)
+    assert np.isclose(jk["GM_std"], np.sqrt(tools._jackknife_var(GM_refit)), rtol=0.1)
+
+
 def test_fit_vertical_coherence_recovers_gaussian():
     """The fit to the unnormalized coherence ignores the noise-biased zero lag."""
     import numpy as np
@@ -324,14 +495,22 @@ def test_phi_chi_LS_fit_uses_matching_wavefront_values(
         return "m", None, None, "phi_lm", "phi_ls", "chi_lm", "chi_ls"
 
     monkeypatch.setattr(cli_mod.tools, "estimate_F_phi_chi", fake_estimate)
-    monkeypatch.setattr(cli_mod.tools, "fit_F_phi_chis", lambda *args: {"args": args})
+    monkeypatch.setattr(
+        cli_mod.tools,
+        "fit_F_phi_chis",
+        lambda *args, **kwargs: {"args": args, "kwargs": kwargs},
+    )
 
     cli_mod.phi_chi_LS_fit(remove_array_tilt=remove_array_tilt, force_overwrite=True)
 
     assert calls == [remove_array_tilt]
     with cli_mod.tools.phi_chi_LS_fit_path(remove_array_tilt).open("rb") as f:
-        assert pickle.load(f) == {"args": ("m", "phi_lm", "chi_lm", "phi_ls", "chi_ls")}
-    assert not cli_mod.tools.phi_chi_LS_fit_path(not remove_array_tilt).exists()
+        assert pickle.load(f) == {
+            "args": ("m", "phi_lm", "chi_lm", "phi_ls", "chi_ls"),
+            "kwargs": {},
+        }
+    written = list((tmp_path / "dataproducts").iterdir())
+    assert written == [cli_mod.tools.phi_chi_LS_fit_path(remove_array_tilt)]
 
 
 def test_run_all_processing_fits_both_modes():
@@ -342,7 +521,9 @@ def test_run_all_processing_fits_both_modes():
 
     source = inspect.getsource(cli.run_all_processing)
     assert source.count("phi_chi_LS_fit,") == 2
+    # wavefront values and the fit, each in both modes
     assert source.count('{"remove_array_tilt": True}') == 2
+    assert source.count('{"remove_array_tilt": False}') == 2
 
 
 def test_peak_locations_saves_upper_array():

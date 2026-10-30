@@ -127,6 +127,12 @@ class MapConfig:
         )
 
 
+# model curves of F_phi_chi_ducted: the least squares GM fit, or fixed GM levels (``gm_levels``)
+SPECTRA_MODELS = ("fit", "gm_levels")
+# linestyles of the fixed GM levels, in order: (ray, -8 overlay on the +7 panel)
+GM_LEVEL_STYLES = (("-", "dashdot"), ("--", "dotted"))
+
+
 @dataclass(frozen=True)
 class PublicationFiguresConfig:
     """Contents of a publication figures ``config.yaml``."""
@@ -138,6 +144,8 @@ class PublicationFiguresConfig:
     usetex: bool = True
     seed: int = 0
     remove_array_tilt: bool = True
+    spectra_model: str = "fit"
+    gm_levels: tuple[float, ...] = (1.0, 2.0)
     map: MapConfig = field(default_factory=MapConfig)
 
     def __post_init__(self) -> None:
@@ -160,6 +168,8 @@ class PublicationFiguresConfig:
                 "usetex",
                 "seed",
                 "remove_array_tilt",
+                "spectra_model",
+                "gm_levels",
                 "map",
             ),
             path,
@@ -205,6 +215,27 @@ class PublicationFiguresConfig:
             msg = f"{path}.remove_array_tilt: expected true or false, got {remove_array_tilt!r}"
             raise ConfigError(msg)
 
+        spectra_model = data.get("spectra_model", "fit")
+        if spectra_model not in SPECTRA_MODELS:
+            msg = f"{path}.spectra_model: expected one of {list(SPECTRA_MODELS)}, got {spectra_model!r}"
+            raise ConfigError(msg)
+
+        gm_levels = data.get("gm_levels", [1, 2])
+        if (
+            isinstance(gm_levels, str)
+            or not isinstance(gm_levels, Sequence)
+            or not 1 <= len(gm_levels) <= len(GM_LEVEL_STYLES)
+            or any(
+                isinstance(gm, bool) or not isinstance(gm, (int, float)) or gm <= 0
+                for gm in gm_levels
+            )
+        ):
+            msg = (
+                f"{path}.gm_levels: expected a list of 1 to {len(GM_LEVEL_STYLES)} positive numbers, "
+                f"got {gm_levels!r}"
+            )
+            raise ConfigError(msg)
+
         return cls(
             output_dir=output_dir,
             which=which,
@@ -213,6 +244,8 @@ class PublicationFiguresConfig:
             usetex=usetex,
             seed=seed,
             remove_array_tilt=remove_array_tilt,
+            spectra_model=spectra_model,
+            gm_levels=tuple(float(gm) for gm in gm_levels),
             map=MapConfig.from_mapping(data.get("map") or {}, f"{path}.map"),
         )
 
@@ -1465,6 +1498,12 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
     The observed spectra are the bias-corrected log-means of the per-transmission periodograms, and the
     shaded bands are ± their leave-one-transmission-out jackknife standard error
     (`tools.estimate_F_phi_chi`).
+
+    ``cfg.spectra_model`` picks the model curves. ``"fit"`` (the notebook) draws the least squares GM
+    level with its noise levels, model + noise dashed. ``"gm_levels"`` draws the GM levels of
+    ``cfg.gm_levels`` (default 1x GM solid and 2x GM dashed; ``[1]`` for 1x GM only) without noise and
+    does not need the fit, like `plot_ducted_vc`; the -8 overlay on the +7 panel is dash-dot for the
+    first level and dotted for the second.
     """
     whoi_colors = ["#00B7BD", "#EE5340"]
 
@@ -1483,11 +1522,14 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
         tools.estimate_F_phi_chi(remove_array_tilt=cfg.remove_array_tilt)
     )
 
-    # open ls parameters for spectra + noise model
-    results = _load_pickle(
-        tools.phi_chi_LS_fit_path(cfg.remove_array_tilt).name,
-        "ɸ χ GM least squares fit",
-    )
+    # GM levels of the model spectra, with their noise levels and linestyles (ray, -8 overlay)
+    fixed_gm = cfg.spectra_model == "gm_levels"
+    if not fixed_gm:
+        # open ls parameters for spectra + noise model
+        results = _load_pickle(
+            tools.phi_chi_LS_fit_path(cfg.remove_array_tilt).name,
+            "ɸ χ GM least squares fit",
+        )
 
     m = 2 * np.pi * np.logspace(-5, 0, 500)[None, :]  # [rad / m]
 
@@ -1495,60 +1537,92 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
     axes = axes.flatten()
 
     for k, ray_id in enumerate(["+7", "-7", "+6", "-6"]):
-        F_phis_model, F_chis_model, F_phis_model_nonoise, F_chis_model_nonoise = (
-            tools.phi_chi_spectrum_model(
-                m,
-                results[ray_id].x[0],
-                results[ray_id].x[1],
-                results[ray_id].x[2],
-                ray_id,
-                all_paths=True,
-            )
-        )
-        F_phi_model, F_chi_model = F_phis_model[0], F_chis_model[0]
+        if fixed_gm:
+            levels = [
+                (gm, 0, 0, *styles)
+                for gm, styles in zip(cfg.gm_levels, GM_LEVEL_STYLES, strict=False)
+            ]
+        else:
+            levels = [(*results[ray_id].x, "-", "dashdot")]
 
-        # compute model spectra for -8 as well (if +7 arrival)
-        if ray_id == "+7":
-            _, _, F_phi_model_nonoise2, F_chi_model_nonoise2 = (
+        models = []
+        for GM, phi_noise, chi_noise, linestyle, linestyle2 in levels:
+            F_phis_model, F_chis_model, F_phis_model_nonoise, F_chis_model_nonoise = (
                 tools.phi_chi_spectrum_model(
                     m,
-                    results[ray_id].x[0],
-                    results[ray_id].x[1],
-                    results[ray_id].x[2],
-                    "-8",
+                    GM,
+                    phi_noise,
+                    chi_noise,
+                    ray_id,
+                    all_paths=True,
                 )
             )
+            F_phi_model, F_chi_model = F_phis_model[0], F_chis_model[0]
 
-        # extend noise floor to the right
-        nan_mask = np.isnan(F_phi_model)
-        F_phi_model = np.hstack((F_phi_model[~nan_mask], F_phi_model[~nan_mask][-1]))
-        F_chi_model = np.hstack((F_chi_model[~nan_mask], F_chi_model[~nan_mask][-1]))
-        m_extend = np.concatenate((m[:, ~nan_mask], np.array([[100]])), axis=1)
+            # compute model spectra for -8 as well (if +7 arrival)
+            F_phi_model_nonoise2 = F_chi_model_nonoise2 = None
+            if ray_id == "+7":
+                _, _, F_phi_model_nonoise2, F_chi_model_nonoise2 = (
+                    tools.phi_chi_spectrum_model(m, GM, phi_noise, chi_noise, "-8")
+                )
+
+            # extend noise floor to the right
+            nan_mask = np.isnan(F_phi_model)
+            F_phi_model = np.hstack(
+                (F_phi_model[~nan_mask], F_phi_model[~nan_mask][-1])
+            )
+            F_chi_model = np.hstack(
+                (F_chi_model[~nan_mask], F_chi_model[~nan_mask][-1])
+            )
+            m_extend = np.concatenate((m[:, ~nan_mask], np.array([[100]])), axis=1)
+
+            models.append(
+                {
+                    "linestyle": linestyle,
+                    "linestyle2": linestyle2,
+                    "phi": (F_phis_model_nonoise, F_phi_model_nonoise2, F_phi_model),
+                    "chi": (F_chis_model_nonoise, F_chi_model_nonoise2, F_chi_model),
+                    "m_extend": m_extend,
+                }
+            )
 
         plt.sca(axes[k])
 
-        # WFT GMIW F_phi
-        for F_phi_model_nonoise in F_phis_model_nonoise:
-            plt.plot(
-                m[0] / (2 * np.pi), F_phi_model_nonoise, c=colors[0], lw=1.5, alpha=0.85
-            )
+        def plot_models(models, ray_id, key, color):
+            for model in models:
+                F_models_nonoise, F_model_nonoise2, F_model = model[key]
+                for F_model_nonoise in F_models_nonoise:
+                    plt.plot(
+                        m[0] / (2 * np.pi),
+                        F_model_nonoise,
+                        c=color,
+                        lw=1.5,
+                        alpha=0.85,
+                        linestyle=model["linestyle"],
+                    )
 
-        if ray_id == "+7":
-            plt.plot(
-                m[0] / (2 * np.pi),
-                F_phi_model_nonoise2,
-                c=colors[0],
-                linestyle="dashdot",
-                lw=1.5,
-                alpha=0.85,
-            )
-        plt.plot(
-            m_extend[0] / (2 * np.pi),
-            F_phi_model,
-            c=colors[0],
-            lw=0.75,
-            linestyle="dashed",
-        )
+                if ray_id == "+7":
+                    plt.plot(
+                        m[0] / (2 * np.pi),
+                        F_model_nonoise2,
+                        c=color,
+                        linestyle=model["linestyle2"],
+                        lw=1.5,
+                        alpha=0.85,
+                    )
+
+                # model + noise (only the fit has noise levels)
+                if not fixed_gm:
+                    plt.plot(
+                        model["m_extend"][0] / (2 * np.pi),
+                        F_model,
+                        c=color,
+                        lw=0.75,
+                        linestyle="dashed",
+                    )
+
+        # WFT GMIW F_phi
+        plot_models(models, ray_id, "phi", colors[0])
 
         # F_phi observed
         plt.plot(m_data, F_phi_lm[ray_id], c=colors[1], marker="o", markersize=3)
@@ -1562,28 +1636,7 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
         )
 
         # WFT GMIW F_chi
-
-        for F_chi_model_nonoise in F_chis_model_nonoise:
-            plt.plot(
-                m[0] / (2 * np.pi), F_chi_model_nonoise, c=colors[2], lw=1.5, alpha=0.85
-            )
-
-        if ray_id == "+7":
-            plt.plot(
-                m[0] / (2 * np.pi),
-                F_chi_model_nonoise2,
-                c=colors[2],
-                linestyle="dashdot",
-                lw=1.5,
-                alpha=0.85,
-            )
-        plt.plot(
-            m_extend[0] / (2 * np.pi),
-            F_chi_model,
-            c=colors[2],
-            lw=0.75,
-            linestyle="dashed",
-        )
+        plot_models(models, ray_id, "chi", colors[2])
 
         # F_chi observed
         plt.plot(m_data, F_chi_lm[ray_id], c=colors[3], marker="o", markersize=3)
@@ -1600,7 +1653,7 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
         plt.xlim([2e-4, 4e-1])
 
         plt.xlabel("vertical wave number [1/m]")
-        plt.ylabel("$F_{\\phi, \\chi}$ [$\\mathrm{rad} \\ m$]")
+        plt.ylabel("$F_{\\phi, \\chi}$ [$1/\\mathrm{cpm}$]")
 
         plt.yscale("log")
         plt.xscale("log")
@@ -1637,14 +1690,20 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
                 },
             )
 
-        plt.text(
-            0.04,
-            0.07,
-            f"{results[ray_id].x[0]:0.1f} $\\times$ GM Energy\n$F_{{\\phi}}$ noise level = {results[ray_id].x[1]:0.2f} [rad m]\n$F_{{\\chi}}$ noise level = {results[ray_id].x[2]:0.2f} [rad m]",
-            transform=axes[k].transAxes,
-            fontsize=8,
-            bbox={"facecolor": "white", "edgecolor": "k", "pad": 3, "linewidth": 0.5},
-        )
+        if not fixed_gm:
+            plt.text(
+                0.04,
+                0.07,
+                f"{results[ray_id].x[0]:0.1f} $\\times$ GM Energy\n$F_{{\\phi}}$ noise level = {results[ray_id].x[1]:0.2f} [rad m]\n$F_{{\\chi}}$ noise level = {results[ray_id].x[2]:0.2f} [rad m]",
+                transform=axes[k].transAxes,
+                fontsize=8,
+                bbox={
+                    "facecolor": "white",
+                    "edgecolor": "k",
+                    "pad": 3,
+                    "linewidth": 0.5,
+                },
+            )
 
         # add +7,-8 legend
         if ray_id == "+7":
@@ -1669,7 +1728,33 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
                 loc=(0.75, 0.05),
             )
 
-    plt.tight_layout()
+    if fixed_gm:
+        # leave a strip at the bottom for the shared GM-strength legend, as in Ducted_VC
+        plt.tight_layout(rect=(0, 0.045, 1, 1))
+        gm_handles = [
+            mlines.Line2D(
+                [],
+                [],
+                color="k",
+                lw=1.5,
+                linestyle=styles[0],
+                label=f"${gm:g} \\times$ GM",
+            )
+            for gm, styles in zip(cfg.gm_levels, GM_LEVEL_STYLES, strict=False)
+        ]
+        sp = fig.subplotpars
+        gm_leg = fig.legend(
+            handles=gm_handles,
+            ncols=len(gm_handles),
+            loc="lower center",
+            bbox_to_anchor=((sp.left + sp.right) / 2, 0),
+            framealpha=1,
+            fancybox=False,
+            edgecolor="k",
+        )
+        gm_leg.get_frame().set_linewidth(0.5)
+    else:
+        plt.tight_layout()
     # the Ray ID box takes the upper right
     label_panels(axes, "upper left")
     return fig

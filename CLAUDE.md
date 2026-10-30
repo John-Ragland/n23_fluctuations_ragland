@@ -84,6 +84,22 @@ uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dash
     at ≈0.61 × 2Φ². Φ² is the discrete mode sum of Eq. 6.56, and the continuous integral from mode 1
     undercounts its mode-1-dominated sum (edge factor 0.68 × H normalization 0.894). A ratio far from
     0.61, or one that varies between rays, would indicate a bug.
+  - `fit_GM_vertical_coherence(wavefront_values)` is the coherence counterpart of `fit_F_phi_chis`. It
+    fits one GM level to D = −2 ln VC (`structure_function_from_coherence`, lags 9–126 m, jackknife weights),
+    using the path-integral D of `compute_phase_structure_function` (with the ξ₁ dilation) on the first eigenray pair.
+    The model is re-evaluated at each GM because J(s) depends on GM, though D/GM varies by <1% from 1 to 4 GM.
+    The SE is a jackknife of the fit linearized at the optimum. D from the coherence is the *wave* structure
+    function (φ + χ), so it can't see the WFT φ/χ split that the spectral fit depends on.
+  - `jackknife_F_phi_chi_fit(results, ...)` gives jackknife SEs for a `fit_F_phi_chis` result. The fit is
+    linearized at the optimum (Gauss-Newton), so the 23 leave-one-out refits are skipped, since each model
+    evaluation re-traces the rays. The weights are held at their full-data values. A parameter on its bound is held fixed and
+    gets a NaN SE. `test_jackknife_F_phi_chi_fit_matches_refit` checks it against exact refits.
+  - `GM_levels_latex_table` puts the WFT spectral-fit and path-integral coherence-fit levels side by side, each ±
+    its jackknife SE. The table backs the CLI's "GM levels (spectra vs. coherence)" entry, which asks "Remove
+    array tilt?" and reads the existing `phi_chi_LS_fit[_tilt_removed].pkl` (`--` if missing). It does the
+    coherence fit itself and takes under a minute. On the tilt-removed data the coherence gives
+    3.47 ± 0.65 / 0.74 ± 0.21 / 2.71 ± 1.25 / 3.32 ± 0.98 (+7 / −7 / +6 / −6), and the spectral fit gave
+    0.56 / 0.19 / 0.45 / 0.84 (SEs not yet re-run since the dilation option was removed on 2026-10-29).
   - `transmission_independence_test(samples)` supports the jackknife's assumption that the hourly
     transmissions are independent. It compares the lag-1 autocorrelation of per-transmission estimates
     with ±2/√M and gives a permutation p-value. `independence_test_F_phi_chi` (log-periodograms) and
@@ -120,6 +136,12 @@ uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dash
     `Ducted_Intensity_Distribution` and `Ducted_VC`, and the matching φ/χ fit
     (`phi_chi_LS_fit_tilt_removed.pkl` vs `phi_chi_LS_fit.pkl`) for `F_phi_chi_ducted`.
     The notebooks still use `remove_array_tilt=False` and `phi_chi_LS_fit.pkl`.
+  - The config's `spectra_model` picks the `F_phi_chi_ducted` model curves: `fit` (default, the notebook) draws
+    the least-squares GM level with model + noise dashed and the fit text box; `gm_levels` draws 1× GM (solid)
+    and 2× GM (dashed) without noise or the fit, with a shared GM legend strip as in `Ducted_VC` (−8 overlay:
+    dash-dot 1×, dotted 2×). Both write the same `F_phi_chi_ducted` name.
+    `gm_levels` (default `[1, 2]`) sets those levels: one or two positive numbers, solid then dashed, with
+    the legend labels built from them; `[1]` draws 1× GM only. It is ignored with `spectra_model: fit`.
   - `common_arrival_time_shift_estimation` reads `dT_t_upper`/`dT_t_lower` from `T_t_estimated.pkl`.
     Only this project's "compute arrival time offset" writes those keys. The base `nescafe23` CLI
     writes the same file without them.

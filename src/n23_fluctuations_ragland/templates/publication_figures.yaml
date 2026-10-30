@@ -40,6 +40,15 @@ seed: 0
 # Ducted_VC. false = the per-transmission picked angles (wavefront_values.pkl, phi_chi_LS_fit.pkl).
 remove_array_tilt: true
 
+# Model curves of F_phi_chi_ducted. fit = the least squares GM level and noise levels
+# (phi_chi_LS_fit*.pkl). gm_levels = 1x GM (solid) and 2x GM (dashed) without noise, like
+# Ducted_VC; it needs no fit. Both use the same output name, F_phi_chi_ducted.
+spectra_model: fit
+
+# GM levels drawn when spectra_model is gm_levels: one or two positive numbers, solid then dashed.
+# [1] = 1x GM only.
+gm_levels: [1, 2]
+
 map:
   # TrueType font for the map. null -> $NESCAFE23_DATADIR/fonts/RedHatDisplay-Medium.ttf
   font: null
