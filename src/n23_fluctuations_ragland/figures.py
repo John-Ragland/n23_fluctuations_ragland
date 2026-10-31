@@ -1310,12 +1310,16 @@ def plot_acoustic_receptions(cfg: PublicationFiguresConfig) -> Figure:
 
     # Arrival annotations (added by hand to the published figure; positions match
     # reference/Acoustic_Receptions.pdf). (label, ellipse center, width, height, label xy)
+    # The labels follow the peak picks (`open_peak_locations`) for this transmission,
+    # not the reference, which swapped +7 and -7. The late -9 deg arrival is +7 with -8
+    # unresolved under it (traced 2 ms apart); -6b is not labelled in the reference.
     arrivals = [
         ("-5b", (100.505, 11.2), 0.183, 16.7, (100.387, 17.3)),
         ("+6", (100.851, 7.6), 0.062, 9.9, (100.80, 11.3)),
-        ("+7", (100.917, 5.4), 0.059, 9.6, (100.979, 3.9)),
+        ("-7", (100.917, 5.4), 0.059, 9.6, (100.979, 3.9)),
         ("-6", (100.738, -11.6), 0.088, 11.0, (100.658, -7.2)),
-        ("-7/+8", (101.065, -11.3), 0.115, 12.8, (101.19, -12.7)),
+        ("-6b", (100.952, -18.5), 0.059, 8.4, (100.952, -12.9)),
+        ("+7/-8", (101.065, -11.3), 0.115, 12.8, (101.19, -12.7)),
         ("+6b", (101.295, 14.5), 0.062, 8.4, (101.373, 9.4)),
         ("+7b", (101.728, -21.2), 0.059, 8.4, (101.648, -16.0)),
     ]
