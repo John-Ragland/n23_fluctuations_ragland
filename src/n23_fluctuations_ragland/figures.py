@@ -144,6 +144,7 @@ class PublicationFiguresConfig:
     usetex: bool = True
     seed: int = 0
     remove_array_tilt: bool = True
+    remove_pattern: str = "none"
     spectra_model: str = "fit"
     gm_levels: tuple[float, ...] = (1.0, 2.0)
     map: MapConfig = field(default_factory=MapConfig)
@@ -168,6 +169,7 @@ class PublicationFiguresConfig:
                 "usetex",
                 "seed",
                 "remove_array_tilt",
+                "remove_pattern",
                 "spectra_model",
                 "gm_levels",
                 "map",
@@ -215,6 +217,14 @@ class PublicationFiguresConfig:
             msg = f"{path}.remove_array_tilt: expected true or false, got {remove_array_tilt!r}"
             raise ConfigError(msg)
 
+        remove_pattern = data.get("remove_pattern", "none")
+        if remove_pattern not in tools.REMOVE_PATTERN_CHOICES:
+            msg = (
+                f"{path}.remove_pattern: expected one of {list(tools.REMOVE_PATTERN_CHOICES)}, "
+                f"got {remove_pattern!r}"
+            )
+            raise ConfigError(msg)
+
         spectra_model = data.get("spectra_model", "fit")
         if spectra_model not in SPECTRA_MODELS:
             msg = f"{path}.spectra_model: expected one of {list(SPECTRA_MODELS)}, got {spectra_model!r}"
@@ -244,6 +254,7 @@ class PublicationFiguresConfig:
             usetex=usetex,
             seed=seed,
             remove_array_tilt=remove_array_tilt,
+            remove_pattern=remove_pattern,
             spectra_model=spectra_model,
             gm_levels=tuple(float(gm) for gm in gm_levels),
             map=MapConfig.from_mapping(data.get("map") or {}, f"{path}.map"),
@@ -356,22 +367,16 @@ def _ray_run() -> dict[str, Any]:
 
 
 @cache
-def _wavefront_values() -> dict[str, Any]:
-    return _load_pickle("wavefront_values.pkl", "compute wavefront values")  # type: ignore[no-any-return]
-
-
-@cache
-def _wavefront_values_tilt_removed() -> dict[str, Any]:
-    return _load_pickle(  # type: ignore[no-any-return]
-        "wavefront_values_tilt_removed.pkl", "compute wavefront values"
-    )
+def _wavefront_values(name: str) -> dict[str, Any]:
+    return _load_pickle(name, "compute wavefront values")  # type: ignore[no-any-return]
 
 
 def _wavefront_values_for(cfg: PublicationFiguresConfig) -> dict[str, Any]:
-    """The wavefront values with the array tilt removed or not, per ``cfg.remove_array_tilt``."""
-    if cfg.remove_array_tilt:
-        return _wavefront_values_tilt_removed()
-    return _wavefront_values()
+    """The wavefront values with the array tilt and the hydrophone pattern removed or not, per
+    ``cfg.remove_array_tilt`` and ``cfg.remove_pattern`` (`tools.wavefront_values_path`)."""
+    return _wavefront_values(
+        tools.wavefront_values_path(cfg.remove_array_tilt, cfg.remove_pattern).name
+    )
 
 
 def clear_cache() -> None:
@@ -379,7 +384,6 @@ def clear_cache() -> None:
     _receptions.cache_clear()
     _ray_run.cache_clear()
     _wavefront_values.cache_clear()
-    _wavefront_values_tilt_removed.cache_clear()
 
 
 # ---------------------------------------------------------------------------
@@ -1518,8 +1522,14 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
     ]
 
     # open observations
+    _dataproduct(
+        tools.wavefront_values_path(cfg.remove_array_tilt, cfg.remove_pattern).name,
+        "compute wavefront values",
+    )
     m_data, _F_phi_data, _F_chi_data, F_phi_lm, F_phi_ls, F_chi_lm, F_chi_ls = (
-        tools.estimate_F_phi_chi(remove_array_tilt=cfg.remove_array_tilt)
+        tools.estimate_F_phi_chi(
+            remove_array_tilt=cfg.remove_array_tilt, remove_pattern=cfg.remove_pattern
+        )
     )
 
     # GM levels of the model spectra, with their noise levels and linestyles (ray, -8 overlay)
@@ -1527,7 +1537,7 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
     if not fixed_gm:
         # open ls parameters for spectra + noise model
         results = _load_pickle(
-            tools.phi_chi_LS_fit_path(cfg.remove_array_tilt).name,
+            tools.phi_chi_LS_fit_path(cfg.remove_array_tilt, cfg.remove_pattern).name,
             "ɸ χ GM least squares fit",
         )
 

@@ -54,7 +54,15 @@ from scipy import optimize, signal
 from n23_fluctuations_ragland import tools
 
 DZ = 9.0  # hydrophone spacing of the lower array [m]
-WAVEFRONT_SOURCES = ("tilt_removed", "picked_angle")
+# wavefront source → (remove_array_tilt, remove_pattern) of `tools.wavefront_values_path`
+WAVEFRONT_FILES = {
+    "tilt_removed": (True, "none"),
+    "picked_angle": (False, "none"),
+    "tilt_removed_phase": (True, "phase"),
+    "tilt_removed_magnitude": (True, "magnitude"),
+    "tilt_removed_both": (True, "both"),
+}
+WAVEFRONT_SOURCES = tuple(WAVEFRONT_FILES)
 DETRENDS = ("constant", "linear")
 COMMON_MODES = ("none", "per_ray", "all_rays", "all_arrivals")
 FILLS = ("zero", "linear")
@@ -187,8 +195,10 @@ class SpectralEstimate:
 
 
 def load_wavefronts(source: str) -> dict[str, np.ndarray]:
-    """Wavefront values (`get_wavefront_values`) for ``tilt_removed`` or ``picked_angle``."""
-    with tools.wavefront_values_path(source == "tilt_removed").open("rb") as f:
+    """Wavefront values (`get_wavefront_values`) of a source in `WAVEFRONT_SOURCES`: ``tilt_removed``,
+    ``picked_angle``, or ``tilt_removed_<phase|magnitude|both>`` with the hydrophone pattern removed before
+    beamforming."""
+    with tools.wavefront_values_path(*WAVEFRONT_FILES[source]).open("rb") as f:
         return pickle.load(f)
 
 

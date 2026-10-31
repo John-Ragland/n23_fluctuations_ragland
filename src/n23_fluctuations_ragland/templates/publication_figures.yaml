@@ -40,6 +40,14 @@ seed: 0
 # Ducted_VC. false = the per-transmission picked angles (wavefront_values.pkl, phi_chi_LS_fit.pkl).
 remove_array_tilt: true
 
+# Hydrophone pattern removed from the receptions before beamforming, in F_phi_chi_ducted,
+# Ducted_Intensity_Distribution and Ducted_VC: none, phase (removed as a time delay per element),
+# magnitude (a gain per element) or both. The pattern comes from 'estimate hydrophone pattern'
+# (hydrophone_pattern.pkl), and the wavefront values and fit from 'compute wavefront values' and
+# 'ɸ χ GM least squares fit' with the same choice (e.g. wavefront_values_tilt_removed_phase_removed.pkl).
+# With the phase removed, F_phi_chi_ducted uses all 28 elements instead of zero-filling 4, 5 and 20.
+remove_pattern: none
+
 # Model curves of F_phi_chi_ducted. fit = the least squares GM level and noise levels
 # (phi_chi_LS_fit*.pkl). gm_levels = 1x GM (solid) and 2x GM (dashed) without noise, like
 # Ducted_VC; it needs no fit. Both use the same output name, F_phi_chi_ducted.

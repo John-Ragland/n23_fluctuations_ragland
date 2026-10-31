@@ -28,7 +28,11 @@ def test_default_estimator_matches_estimate_F_phi_chi(tmp_path, monkeypatch):
     path = tmp_path / "wavefront_values_tilt_removed.pkl"
     with path.open("wb") as f:
         pickle.dump(wavefronts, f)
-    monkeypatch.setattr(tools, "wavefront_values_path", lambda remove_array_tilt: path)
+    monkeypatch.setattr(
+        tools,
+        "wavefront_values_path",
+        lambda remove_array_tilt, remove_pattern="none": path,
+    )
 
     m, _, _, F_phi_lm, F_phi_ls, F_chi_lm, F_chi_ls = tools.estimate_F_phi_chi(
         remove_array_tilt=True

@@ -15,7 +15,7 @@ from nescafe23.data import get_data_dir
 
 ## Define global variables
 from nescafe23.processing import PEAK_BOXES_LOWER
-from scipy import io, optimize, signal
+from scipy import io, optimize, signal, stats
 from tqdm import tqdm
 
 # dictionary containing tuples for matching forward and backward eigenrays. These pairings are hand-picked
@@ -191,39 +191,379 @@ def open_array_tilt():
         return pickle.load(f)
 
 
-def wavefront_values_path(remove_array_tilt):
+# which part of the hydrophone pattern (`estimate_hydrophone_pattern`) is removed before beamforming
+REMOVE_PATTERN_CHOICES = ("none", "phase", "magnitude", "both")
+_REMOVE_PATTERN_SUFFIXES = {
+    "none": "",
+    "phase": "_phase_removed",
+    "magnitude": "_magnitude_removed",
+    "both": "_phase_magnitude_removed",
+}
+
+
+def _check_remove_pattern(remove_pattern):
+    if remove_pattern not in REMOVE_PATTERN_CHOICES:
+        msg = f"remove_pattern: expected one of {list(REMOVE_PATTERN_CHOICES)}, got {remove_pattern!r}"
+        raise ValueError(msg)
+
+
+def _product_suffix(remove_array_tilt, remove_pattern):
+    _check_remove_pattern(remove_pattern)
+    tilt = "_tilt_removed" if remove_array_tilt else ""
+    return tilt + _REMOVE_PATTERN_SUFFIXES[remove_pattern]
+
+
+def wavefront_values_path(remove_array_tilt, remove_pattern="none"):
     """
-    Path of the cached wavefront values, ``dataproducts/wavefront_values[_tilt_removed].pkl``.
+    Path of the cached wavefront values,
+    ``dataproducts/wavefront_values[_tilt_removed][_phase_removed|_magnitude_removed|_phase_magnitude_removed].pkl``.
 
     Parameters
     ----------
     remove_array_tilt : bool
         If True, the path of the wavefront values with the array tilt removed.
+    remove_pattern : str
+        hydrophone pattern removed before beamforming, one of `REMOVE_PATTERN_CHOICES`. Default is ``"none"``.
     """
-    fn = (
-        "wavefront_values_tilt_removed.pkl"
-        if remove_array_tilt
-        else "wavefront_values.pkl"
-    )
+    fn = f"wavefront_values{_product_suffix(remove_array_tilt, remove_pattern)}.pkl"
     return get_data_dir() / "dataproducts" / fn
 
 
-def phi_chi_LS_fit_path(remove_array_tilt):
+def phi_chi_LS_fit_path(remove_array_tilt, remove_pattern="none"):
     """
-    Path of the cached ɸ χ GM least squares fit, ``dataproducts/phi_chi_LS_fit[_tilt_removed].pkl``.
+    Path of the cached ɸ χ GM least squares fit, ``dataproducts/phi_chi_LS_fit[_tilt_removed][...].pkl``,
+    with the suffixes of `wavefront_values_path`.
 
     Parameters
     ----------
     remove_array_tilt : bool
         If True, the path of the fit to the wavefront values with the array tilt removed.
+    remove_pattern : str
+        hydrophone pattern removed before beamforming, one of `REMOVE_PATTERN_CHOICES`. Default is ``"none"``.
     """
-    fn = (
-        "phi_chi_LS_fit_tilt_removed.pkl" if remove_array_tilt else "phi_chi_LS_fit.pkl"
-    )
+    fn = f"phi_chi_LS_fit{_product_suffix(remove_array_tilt, remove_pattern)}.pkl"
     return get_data_dir() / "dataproducts" / fn
 
 
-def get_wavefront_values(dss, remove_array_tilt=False, half_window=1.0):
+def hydrophone_pattern_path():
+    """Path of the hydrophone pattern estimate, ``dataproducts/hydrophone_pattern.pkl``."""
+    return get_data_dir() / "dataproducts" / "hydrophone_pattern.pkl"
+
+
+def open_hydrophone_pattern():
+    """
+    Open the hydrophone pattern estimate, ``dataproducts/hydrophone_pattern.pkl``.
+
+    The file is produced by running ``n23_fluctuation_analysis`` and selecting
+    **estimate hydrophone pattern**.
+
+    Returns
+    -------
+    pattern : dict
+        see `estimate_hydrophone_pattern`
+    """
+    path = hydrophone_pattern_path()
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Hydrophone pattern file not found at {path}.\n"
+            "Generate it by running 'n23_fluctuation_analysis' and selecting "
+            "'estimate hydrophone pattern'."
+        )
+    with path.open("rb") as f:
+        return pickle.load(f)
+
+
+def _linear_detrend(x):
+    """Remove the least-squares line along the last axis (the element index)."""
+    x = np.asarray(x, dtype=float)
+    x2 = np.atleast_2d(x)
+    V = np.vander(np.arange(x2.shape[1], dtype=float), 2)
+    coef, *_ = np.linalg.lstsq(V, x2.T, rcond=None)
+    return (x2 - (V @ coef).T).reshape(x.shape)
+
+
+def _phase_pattern(X):
+    """
+    Phase [rad] along the array common to the records `X` (R, n), linearly detrended.
+
+    The mean step between neighbouring elements is the angle of the sum of the unit phasor products
+    Z(n) Z*(n-1), which needs no unwrapping (as `estimation.circular_common_phase`). Its cumulative sum is
+    removed from each record, and the mean of the linearly detrended, unwrapped residuals is added back.
+    """
+    Z = X / np.abs(X)
+    steps = np.angle(np.sum(Z[:, 1:] * np.conj(Z[:, :-1]), axis=0))
+    prealigned = np.concatenate(([0.0], np.cumsum(steps)))
+    residual = np.unwrap(np.angle(Z * np.exp(-1j * prealigned)), axis=1)
+    return _linear_detrend(prealigned + np.mean(_linear_detrend(residual), axis=0))
+
+
+def _gain_pattern(X):
+    """Amplitude along the array common to the records `X` (R, n): the mean of each record's |X| over its
+    array mean, normalized to unit mean."""
+    A = np.abs(X)
+    g = np.mean(A / np.mean(A, axis=1, keepdims=True), axis=0)
+    return g / np.mean(g)
+
+
+def _phase_residual_rms(X, phase):
+    """rms over the array of each record's phase after removing `phase` and the record's own line."""
+    residual = np.unwrap(np.angle(X * np.exp(-1j * phase)), axis=1)
+    return np.sqrt(np.mean(_linear_detrend(residual) ** 2, axis=1))
+
+
+def _gain_residual_rms(X, gain):
+    A = np.abs(X)
+    return np.sqrt(
+        np.mean((A / np.mean(A, axis=1, keepdims=True) / gain - 1) ** 2, axis=1)
+    )
+
+
+def _pooled(records, arrivals):
+    """The records (R, n) and transmission index of each, of `arrivals`."""
+    X = np.concatenate([records[a][1] for a in arrivals], axis=0)
+    tx = np.concatenate([records[a][0] for a in arrivals])
+    return X, tx
+
+
+def _jackknifed_pattern(pattern_fn, X, tx):
+    """`pattern_fn` of all records, its leave-one-transmission-out jackknife variance, and the number of
+    transmissions."""
+    pattern = pattern_fn(X)
+    loo = [pattern_fn(X[tx != k]) for k in np.unique(tx)]
+    return pattern, _jackknife_var(loo), len(loo)
+
+
+def _pattern_difference_p_value(p_a, v_a, m_a, p_o, v_o, m_o, n_fit):
+    """
+    p-value of the difference of two patterns with jackknife variances `v_a`, `v_o` from `m_a`, `m_o`
+    transmissions. Each element's difference is a Welch t statistic with Welch-Satterthwaite degrees of
+    freedom, mapped to the normal score of the same two-sided p-value, and the sum of squared scores is
+    compared with chi^2 on n - `n_fit` degrees of freedom. Using the t statistics directly as normal scores
+    would overstate the significance, because a jackknife variance from ~20 transmissions is itself noisy.
+    """
+    v = v_a + v_o
+    nu = v**2 / (v_a**2 / (m_a - 1) + v_o**2 / (m_o - 1))
+    t = np.abs(p_a - p_o) / np.sqrt(v)
+    z = stats.norm.isf(stats.t.sf(t, nu))
+    return stats.chi2.sf(np.sum(z**2), len(p_a) - n_fit)
+
+
+def _reject_arrivals(records, pattern_fn, n_fit, alpha):
+    """
+    Iterated test of each arrival's pattern against the pattern of the other arrivals pooled, from the
+    difference of the two patterns and their leave-one-transmission-out jackknife variances
+    (`_pattern_difference_p_value`). The covariance across elements is not used: with fewer transmissions than
+    elements the jackknife covariance is singular. The arrival with the smallest p-value is dropped while it is
+    below alpha / (number of arrivals), and the test is repeated on the rest.
+
+    Returns
+    -------
+    kept : list of str
+    rejected : dict
+        ray_id → p-value when it was dropped
+    """
+    kept = list(records)
+    rejected = {}
+    while len(kept) > 2:
+        p_values = {}
+        for a in kept:
+            own = _jackknifed_pattern(pattern_fn, *_pooled(records, [a]))
+            others = _jackknifed_pattern(
+                pattern_fn, *_pooled(records, [b for b in kept if b != a])
+            )
+            p_values[a] = _pattern_difference_p_value(*own, *others, n_fit)
+        worst = min(p_values, key=p_values.get)
+        if p_values[worst] >= alpha / len(kept):
+            break
+        kept.remove(worst)
+        rejected[worst] = float(p_values[worst])
+    return kept, rejected
+
+
+def _reject_records(records, arrivals, residual_rms, z_max):
+    """
+    Records of `arrivals` whose rms residual from the pattern has a robust z-score, (rms - median) / (1.4826 MAD)
+    over all the records, above `z_max`.
+
+    Returns
+    -------
+    keep : dict
+        ray_id → boolean mask over the arrival's records
+    rejected : dict
+        ray_id → transmission indices rejected (only arrivals with any)
+    """
+    rms = {a: residual_rms(records[a][1]) for a in arrivals}
+    pooled = np.concatenate(list(rms.values()))
+    med = np.median(pooled)
+    mad = 1.4826 * np.median(np.abs(pooled - med))
+    keep = {a: (rms[a] - med) / mad <= z_max for a in arrivals}
+    rejected = {
+        a: records[a][0][~keep[a]].tolist() for a in arrivals if not np.all(keep[a])
+    }
+    return keep, rejected
+
+
+def estimate_hydrophone_pattern(
+    wavefront_values,
+    omit=ARRAY_TILT_OMIT,
+    qc_only=False,
+    alpha=0.01,
+    z_max=3.5,
+    min_records=5,
+    f0=250.0,
+):
+    """
+    Estimate the phase and gain of each lower-array hydrophone, the pattern along the array that is common to
+    every transmission and arrival.
+
+    The pattern is estimated from the wavefront values (`get_wavefront_values`, without pattern removal) of
+    every lower-array arrival except `omit`, ducted and bottom-bounced alike, pooled. The phase pattern is
+    linearly detrended along the array, since a line is a beam angle (array tilt) error and not a property
+    of the hydrophones (`_phase_pattern`). The gain is the mean of each record's |X| over its array mean,
+    normalized to unit mean (`_gain_pattern`). The phase is reported as the delay phase / (2π f0) as well,
+    the form in which `remove_hydrophone_pattern` removes it.
+
+    Outliers are rejected in two steps, separately for the phase and the gain:
+
+    1. arrivals: each arrival's pattern is tested against the pattern of the others, with their jackknife
+       variances, and the worst is dropped while its p-value is below alpha / (number of arrivals)
+       (`_reject_arrivals`);
+    2. records: the remaining (transmission, arrival) records whose rms residual from the pattern has a
+       robust z-score above `z_max` are dropped (`_reject_records`).
+
+    The standard errors are leave-one-transmission-out jackknife errors of the final pattern. A transmission
+    is left out of every arrival at once, because arrivals of one transmission share its tilt and tide.
+
+    Parameters
+    ----------
+    wavefront_values : dict
+        ray_id → complex wavefront values (23, n)
+    omit : tuple of str
+        arrivals left out. Default is `ARRAY_TILT_OMIT`, the arrivals left out of the array tilt.
+    qc_only : bool
+        if True, only picks with QC flag 1 or 5 (`nescafe23.processing.PEAK_LOWER_QC`) are used; a short QC
+        row counts as unreviewed. Default is False.
+    alpha : float
+        family-wise significance of the arrival test. Default is 0.01.
+    z_max : float
+        largest robust z-score of a record's rms residual. Default is 3.5.
+    min_records : int
+        arrivals with fewer usable transmissions are left out. Default is 5.
+    f0 : float
+        carrier frequency [Hz] at which the phase is converted to a delay. Default is 250.
+
+    Returns
+    -------
+    pattern : dict
+        ``phase``, ``phase_se`` [rad]; ``delay``, ``delay_se`` [s]; ``gain``, ``gain_se``: (n,) arrays;
+        ``per_arrival``: {"phase", "gain"} → ray_id → (n,) pattern of every candidate arrival;
+        ``arrivals``: {"phase", "gain"} → arrivals kept; ``rejected_arrivals``: {"phase", "gain"} → ray_id →
+        p-value; ``rejected_records``: {"phase", "gain"} → ray_id → rejected transmissions;
+        ``n_records``: {"phase", "gain"} → number of records in the final pattern; ``omit``, ``f0``,
+        ``notes``.
+    """
+    records = {}
+    for ray_id, X in wavefront_values.items():
+        if ray_id in omit:
+            continue
+        ok = np.all(np.isfinite(X), axis=1) & np.all(X != 0, axis=1)
+        if qc_only:
+            qc = np.asarray(n23.processing.PEAK_LOWER_QC.get(ray_id, []))
+            flagged_good = np.zeros(len(X), dtype=bool)
+            n_qc = min(len(qc), len(X))
+            flagged_good[:n_qc] = np.isin(qc[:n_qc], (1, 5))
+            ok &= flagged_good
+        if ok.sum() >= min_records:
+            records[ray_id] = (np.flatnonzero(ok), X[ok])
+
+    pattern = {
+        "per_arrival": {},
+        "arrivals": {},
+        "rejected_arrivals": {},
+        "rejected_records": {},
+        "n_records": {},
+        "omit": tuple(omit),
+        "f0": f0,
+    }
+    for key, pattern_fn, n_fit, residual_rms in (
+        ("phase", _phase_pattern, 2, _phase_residual_rms),
+        ("gain", _gain_pattern, 1, _gain_residual_rms),
+    ):
+        pattern["per_arrival"][key] = {a: pattern_fn(records[a][1]) for a in records}
+        kept, pattern["rejected_arrivals"][key] = _reject_arrivals(
+            records, pattern_fn, n_fit, alpha
+        )
+        p = pattern_fn(_pooled(records, kept)[0])
+        keep, pattern["rejected_records"][key] = _reject_records(
+            records, kept, lambda X, p=p, f=residual_rms: f(X, p), z_max
+        )
+        cleaned = {a: (records[a][0][keep[a]], records[a][1][keep[a]]) for a in kept}
+        X, tx = _pooled(cleaned, kept)
+        p, var, _ = _jackknifed_pattern(pattern_fn, X, tx)
+        pattern[key] = p
+        pattern[f"{key}_se"] = np.sqrt(var)
+        pattern["arrivals"][key] = kept
+        pattern["n_records"][key] = len(X)
+
+    pattern["delay"] = pattern["phase"] / (2 * np.pi * f0)
+    pattern["delay_se"] = pattern["phase_se"] / (2 * np.pi * f0)
+    pattern["notes"] = (
+        "phase (linearly detrended) and gain along the lower array common to the transmissions and "
+        "arrivals, estimated from the tilt-removed wavefront values with outliers rejected; "
+        "delay = phase / (2 pi f0)"
+    )
+    return pattern
+
+
+def remove_hydrophone_pattern(da, pattern, remove_pattern):
+    """
+    Remove the hydrophone pattern from the receptions of the lower array, in the time domain.
+
+    The phase is removed as a time delay, applied as in `nescafe23.ULA_conventional_beamform_nostack`: each
+    element is multiplied in the frequency domain by exp(i(ω + ω0) d) with d = -``delay``, which at the carrier
+    is exp(-i ``phase``). The gain is removed by dividing each element by ``gain``.
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        complex demodulated receptions of the lower array, dims ``depth`` (in the order of the wavefront
+        values) and ``time``
+    pattern : dict
+        `estimate_hydrophone_pattern`
+    remove_pattern : str
+        one of `REMOVE_PATTERN_CHOICES`
+
+    Returns
+    -------
+    da : xr.DataArray
+        dims ``depth``, ``time``
+    """
+    _check_remove_pattern(remove_pattern)
+    if remove_pattern == "none":
+        return da
+    da = da.transpose("depth", "time")
+    x = da.values
+    if len(pattern["delay"]) != x.shape[0]:
+        msg = f"hydrophone pattern has {len(pattern['delay'])} elements, receptions have {x.shape[0]}"
+        raise ValueError(msg)
+
+    if remove_pattern in ("phase", "both"):
+        dt = float(da.time[1] - da.time[0])
+        ws = 2 * np.pi * scipy.fft.fftfreq(x.shape[1], dt)
+        w0 = 2 * np.pi * pattern["f0"]
+        d = -np.asarray(pattern["delay"])
+        x = scipy.fft.ifft(
+            scipy.fft.fft(x, axis=1) * np.exp(1j * (ws[None, :] + w0) * d[:, None]),
+            axis=1,
+        )
+    if remove_pattern in ("magnitude", "both"):
+        x = x / np.asarray(pattern["gain"])[:, None]
+    return da.copy(data=x)
+
+
+def get_wavefront_values(
+    dss, remove_array_tilt=False, remove_pattern="none", half_window=1.0
+):
     """
     Unstacked beamformer output of the lower array at each ray's arrival time and angle.
 
@@ -239,6 +579,10 @@ def get_wavefront_values(dss, remove_array_tilt=False, half_window=1.0):
         If True, beamform at the ray's transmission-averaged angle plus the array tilt,
         ``open_array_tilt()["angles_plus_tilt"]``, so the per-transmission angle scatter is only
         the tilt common to all rays. Default is False.
+    remove_pattern : str
+        hydrophone pattern removed from the receptions before beamforming (`remove_hydrophone_pattern`, with
+        the pattern of `open_hydrophone_pattern`): ``"none"`` (default), ``"phase"`` (as a time delay),
+        ``"magnitude"`` (as a gain), or ``"both"``.
     half_window : float
         half width [s] of the time window beamformed around each arrival. Must comfortably exceed
         the largest plane-wave delay across the array (~46 ms at 35°) so the FFT wrap-around stays
@@ -255,6 +599,8 @@ def get_wavefront_values(dss, remove_array_tilt=False, half_window=1.0):
         arrival_angles = open_array_tilt()["angles_plus_tilt"]
     else:
         arrival_angles = peak_locations["angles"]
+    _check_remove_pattern(remove_pattern)
+    pattern = None if remove_pattern == "none" else open_hydrophone_pattern()
 
     wavefront_amplitudes = {}
 
@@ -275,6 +621,8 @@ def get_wavefront_values(dss, remove_array_tilt=False, half_window=1.0):
                 continue
 
             window = lower_Rx.sel({"time": slice(t_k - half_window, t_k + half_window)})
+            if pattern is not None:
+                window = remove_hydrophone_pattern(window, pattern, remove_pattern)
             bf, _ = n23.ULA_conventional_beamform_nostack(window, np.array([theta_k]))
 
             wavefront_amplitudes[ray_id][Tx_num, :] = (
@@ -2775,7 +3123,9 @@ def _hann_window(n: int):
     return window / np.sqrt(np.mean(window**2))
 
 
-def estimate_F_phi_chi(remove_array_tilt: bool = False, hann: bool = True):
+def estimate_F_phi_chi(
+    remove_array_tilt: bool = False, hann: bool = True, remove_pattern: str = "none"
+):
     r"""
     Estimate observed $F_{\phi}$ and $F_{\chi}$ for the acoustic receptions.
 
@@ -2789,12 +3139,19 @@ def estimate_F_phi_chi(remove_array_tilt: bool = False, hann: bool = True):
     variance at scales longer than the array, which shows up as a slope or curvature concentrated at the array
     ends, is down-weighted.
 
+    Elements 4, 5 and 20 carry a constant phase offset, so they are zero-filled in phase, unless the phase of
+    the hydrophone pattern was removed (`remove_pattern` ``"phase"`` or ``"both"``), which corrects them, and all
+    28 elements are used.
+
     Parameters
     ----------
     remove_array_tilt : bool
         If True, wavefront values with array tilt removed are used.
     hann : bool
         If True (default), taper with a Hann window. False gives the untapered (rectangular window) periodogram.
+    remove_pattern : str
+        hydrophone pattern removed from the wavefront values used (`wavefront_values_path`), one of
+        `REMOVE_PATTERN_CHOICES`. Default is ``"none"``.
     Returns
     -------
     m_data : np.array
@@ -2816,8 +3173,9 @@ def estimate_F_phi_chi(remove_array_tilt: bool = False, hann: bool = True):
         spectral density, $F_\\chi$, as a multiplicative factor
     """
 
-    with wavefront_values_path(remove_array_tilt).open("rb") as f:
+    with wavefront_values_path(remove_array_tilt, remove_pattern).open("rb") as f:
         wavefront_values = pickle.load(f)
+    phase_removed = remove_pattern in ("phase", "both")
 
     ray_ids = ["+7", "-7", "-6", "+6"]
 
@@ -2835,8 +3193,9 @@ def estimate_F_phi_chi(remove_array_tilt: bool = False, hann: bool = True):
         lamp = np.log(amp)
         phase = np.unwrap(np.angle(wavefront_values[ray_id]), axis=1)
 
-        # remove outliers from phase
-        phase[np.s_[:, np.r_[4:6, 20]]] = np.nan
+        # remove outliers from phase, unless the hydrophone phase pattern already corrected them
+        if not phase_removed:
+            phase[np.s_[:, np.r_[4:6, 20]]] = np.nan
         phase = phase - np.nanmean(phase, axis=1)[:, None]
         phase[np.isnan(phase)] = 0
 
@@ -2938,7 +3297,9 @@ def _independence_test_per_ray(samples_per_ray: dict, **kwargs):
     return {"pooled": pooled, "per_ray": per_ray}
 
 
-def independence_test_F_phi_chi(remove_array_tilt: bool = False, **kwargs):
+def independence_test_F_phi_chi(
+    remove_array_tilt: bool = False, remove_pattern: str = "none", **kwargs
+):
     """
     `transmission_independence_test` of the per-transmission log-periodograms, log10 F_phi and log10 F_chi
     (`estimate_F_phi_chi`), at every wavenumber of the ducted rays.
@@ -2947,6 +3308,8 @@ def independence_test_F_phi_chi(remove_array_tilt: bool = False, **kwargs):
     ----------
     remove_array_tilt : bool
         If True, wavefront values with array tilt removed are used.
+    remove_pattern : str
+        hydrophone pattern removed from the wavefront values used, one of `REMOVE_PATTERN_CHOICES`
     **kwargs
         passed to `transmission_independence_test`
 
@@ -2957,7 +3320,7 @@ def independence_test_F_phi_chi(remove_array_tilt: bool = False, **kwargs):
         all ducted rays, and the mean r1 of each ray ("per_ray")
     """
     _, F_phi_data, F_chi_data, _, _, _, _ = estimate_F_phi_chi(
-        remove_array_tilt=remove_array_tilt
+        remove_array_tilt=remove_array_tilt, remove_pattern=remove_pattern
     )
     return {
         name: _independence_test_per_ray(

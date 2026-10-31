@@ -77,15 +77,28 @@ def test_dilation_is_not_a_config_key(tmp_path):
         figures.load_config(path)
 
 
-def test_wavefront_values_follow_remove_array_tilt(monkeypatch):
-    monkeypatch.setattr(figures, "_wavefront_values", lambda: "with tilt")
-    monkeypatch.setattr(
-        figures, "_wavefront_values_tilt_removed", lambda: "tilt removed"
-    )
+def test_wavefront_values_follow_remove_array_tilt(monkeypatch, tmp_path):
+    monkeypatch.setattr(figures.tools, "get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(figures, "_wavefront_values", lambda name: name)
     cfg = figures.PublicationFiguresConfig()
-    assert figures._wavefront_values_for(cfg) == "tilt removed"
+    assert figures._wavefront_values_for(cfg) == "wavefront_values_tilt_removed.pkl"
     cfg = figures.PublicationFiguresConfig(remove_array_tilt=False)
-    assert figures._wavefront_values_for(cfg) == "with tilt"
+    assert figures._wavefront_values_for(cfg) == "wavefront_values.pkl"
+    cfg = figures.PublicationFiguresConfig(remove_pattern="both")
+    assert (
+        figures._wavefront_values_for(cfg)
+        == "wavefront_values_tilt_removed_phase_magnitude_removed.pkl"
+    )
+
+
+def test_remove_pattern_config(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("remove_pattern: phase\n")
+    assert figures.load_config(path).remove_pattern == "phase"
+    assert figures.PublicationFiguresConfig().remove_pattern == "none"
+    path.write_text("remove_pattern: gain\n")
+    with pytest.raises(figures.ConfigError, match="remove_pattern"):
+        figures.load_config(path)
 
 
 def test_missing_config_says_how_to_make_one(tmp_path):

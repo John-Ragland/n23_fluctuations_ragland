@@ -461,6 +461,42 @@ def test_wavefront_values_paths_per_mode(tmp_path, monkeypatch):
     )
 
 
+def test_wavefront_values_paths_per_pattern(tmp_path, monkeypatch):
+    """Each removed hydrophone pattern gets its own wavefront values and fit file; none keeps the old names."""
+    from n23_fluctuations_ragland import tools
+
+    monkeypatch.setattr(tools, "get_data_dir", lambda: tmp_path)
+    names = {
+        (tilt, pattern): tools.wavefront_values_path(tilt, pattern).name
+        for tilt in (False, True)
+        for pattern in tools.REMOVE_PATTERN_CHOICES
+    }
+    assert names[False, "none"] == "wavefront_values.pkl"
+    assert names[True, "none"] == "wavefront_values_tilt_removed.pkl"
+    assert names[True, "phase"] == "wavefront_values_tilt_removed_phase_removed.pkl"
+    assert names[False, "magnitude"] == "wavefront_values_magnitude_removed.pkl"
+    assert (
+        names[True, "both"]
+        == "wavefront_values_tilt_removed_phase_magnitude_removed.pkl"
+    )
+    assert len(set(names.values())) == len(names)
+    assert (
+        tools.phi_chi_LS_fit_path(True, "both").name
+        == "phi_chi_LS_fit_tilt_removed_phase_magnitude_removed.pkl"
+    )
+    with pytest.raises(ValueError, match="remove_pattern"):
+        tools.wavefront_values_path(True, "gain")
+
+
+def test_get_wavefront_values_pattern_option():
+    import inspect
+
+    from n23_fluctuations_ragland import tools
+
+    params = inspect.signature(tools.get_wavefront_values).parameters
+    assert params["remove_pattern"].default == "none"
+
+
 def test_phi_chi_LS_fit_paths_per_mode(tmp_path, monkeypatch):
     """Tilt-removed ɸ χ fits are written to their own file."""
     from n23_fluctuations_ragland import tools
@@ -477,8 +513,9 @@ def test_phi_chi_LS_fit_paths_per_mode(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("remove_array_tilt", [False, True])
+@pytest.mark.parametrize("remove_pattern", ["none", "phase", "both"])
 def test_phi_chi_LS_fit_uses_matching_wavefront_values(
-    tmp_path, monkeypatch, remove_array_tilt
+    tmp_path, monkeypatch, remove_array_tilt, remove_pattern
 ):
     """The fit estimates the spectra in the requested mode and saves to that mode's file."""
     import pickle
@@ -490,8 +527,8 @@ def test_phi_chi_LS_fit_uses_matching_wavefront_values(
 
     calls = []
 
-    def fake_estimate(remove_array_tilt=False):
-        calls.append(remove_array_tilt)
+    def fake_estimate(remove_array_tilt=False, remove_pattern="none"):
+        calls.append((remove_array_tilt, remove_pattern))
         return "m", None, None, "phi_lm", "phi_ls", "chi_lm", "chi_ls"
 
     monkeypatch.setattr(cli_mod.tools, "estimate_F_phi_chi", fake_estimate)
@@ -501,16 +538,21 @@ def test_phi_chi_LS_fit_uses_matching_wavefront_values(
         lambda *args, **kwargs: {"args": args, "kwargs": kwargs},
     )
 
-    cli_mod.phi_chi_LS_fit(remove_array_tilt=remove_array_tilt, force_overwrite=True)
+    cli_mod.phi_chi_LS_fit(
+        remove_array_tilt=remove_array_tilt,
+        remove_pattern=remove_pattern,
+        force_overwrite=True,
+    )
 
-    assert calls == [remove_array_tilt]
-    with cli_mod.tools.phi_chi_LS_fit_path(remove_array_tilt).open("rb") as f:
+    assert calls == [(remove_array_tilt, remove_pattern)]
+    path = cli_mod.tools.phi_chi_LS_fit_path(remove_array_tilt, remove_pattern)
+    with path.open("rb") as f:
         assert pickle.load(f) == {
             "args": ("m", "phi_lm", "chi_lm", "phi_ls", "chi_ls"),
             "kwargs": {},
         }
     written = list((tmp_path / "dataproducts").iterdir())
-    assert written == [cli_mod.tools.phi_chi_LS_fit_path(remove_array_tilt)]
+    assert written == [path]
 
 
 def test_run_all_processing_fits_both_modes():
@@ -521,9 +563,9 @@ def test_run_all_processing_fits_both_modes():
 
     source = inspect.getsource(cli.run_all_processing)
     assert source.count("phi_chi_LS_fit,") == 2
-    # wavefront values and the fit, each in both modes
-    assert source.count('{"remove_array_tilt": True}') == 2
-    assert source.count('{"remove_array_tilt": False}') == 2
+    # wavefront values and the fit, each in both modes, never with the hydrophone pattern removed
+    assert source.count('{"remove_array_tilt": True, "remove_pattern": "none"}') == 2
+    assert source.count('{"remove_array_tilt": False, "remove_pattern": "none"}') == 2
 
 
 def test_peak_locations_saves_upper_array():

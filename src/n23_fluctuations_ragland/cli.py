@@ -3,6 +3,7 @@ from functools import wraps
 from pathlib import Path
 
 import fsspec
+import matplotlib.pyplot as plt
 import nescafe23 as n23
 import numpy as np
 import pandas as pd
@@ -81,6 +82,7 @@ def main():
             "estimate peak locations",
             "estimate array tilt",
             "compute wavefront values",
+            "estimate hydrophone pattern",
             "compute rays",
             "source geometry sweep",
             "ɸ χ GM least squares fit",
@@ -107,6 +109,8 @@ def main():
         estimate_array_tilt()
     elif choice == "compute wavefront values":
         get_wavefront_values()
+    elif choice == "estimate hydrophone pattern":
+        estimate_hydrophone_pattern()
     elif choice == "compute rays":
         compute_rays()
     elif choice == "source geometry sweep":
@@ -149,12 +153,12 @@ def run_all_processing():
         (
             "Step 4: Computing wavefront values",
             get_wavefront_values,
-            {"remove_array_tilt": False},
+            {"remove_array_tilt": False, "remove_pattern": "none"},
         ),
         (
             "Step 5: Computing wavefront values (array tilt removed)",
             get_wavefront_values,
-            {"remove_array_tilt": True},
+            {"remove_array_tilt": True, "remove_pattern": "none"},
         ),
         ("Step 6: Computing mean pulse", compute_mean_pulse, {}),
         ("Step 7: Computing rays", compute_rays, {}),
@@ -162,12 +166,12 @@ def run_all_processing():
         (
             "Step 9: ɸ χ GM least squares fit",
             phi_chi_LS_fit,
-            {"remove_array_tilt": False},
+            {"remove_array_tilt": False, "remove_pattern": "none"},
         ),
         (
             "Step 10: ɸ χ GM least squares fit (array tilt removed)",
             phi_chi_LS_fit,
-            {"remove_array_tilt": True},
+            {"remove_array_tilt": True, "remove_pattern": "none"},
         ),
     ]
 
@@ -326,36 +330,150 @@ def estimate_array_tilt():
         pickle.dump(array_tilt, f)
 
 
-def _wavefront_values_path(remove_array_tilt):
-    return tools.wavefront_values_path(remove_array_tilt)
+def _ask_remove_pattern():
+    return questionary.select(
+        "Remove hydrophone pattern?",
+        choices=list(tools.REMOVE_PATTERN_CHOICES),
+        default="none",
+    ).ask()
 
 
-def get_wavefront_values(remove_array_tilt=None, force_overwrite=False):
+def _wavefront_values_path(remove_array_tilt, remove_pattern="none"):
+    return tools.wavefront_values_path(remove_array_tilt, remove_pattern)
+
+
+def get_wavefront_values(
+    remove_array_tilt=None, remove_pattern=None, force_overwrite=False
+):
     """
     Given the estimated peak locations, extract the complex pressure values of the wavefront at these time locations.
 
     With the array tilt removed, each ray is beamformed at its mean angle plus the array tilt and the
     result is written to ``wavefront_values_tilt_removed.pkl`` instead of ``wavefront_values.pkl``.
-    The user is asked whether to remove the tilt when `remove_array_tilt` is None.
+    With a hydrophone pattern removed (``phase``, ``magnitude`` or ``both``, from "estimate hydrophone
+    pattern"), it is removed from the receptions before beamforming and the file name gets
+    ``_phase_removed``, ``_magnitude_removed`` or ``_phase_magnitude_removed``. The user is asked whether
+    to remove the tilt and the pattern when `remove_array_tilt` and `remove_pattern` are None.
     """
     if remove_array_tilt is None:
         remove_array_tilt = _ask_remove_array_tilt()
+    if remove_pattern is None:
+        remove_pattern = _ask_remove_pattern()
     _compute_wavefront_values(
-        remove_array_tilt=remove_array_tilt, force_overwrite=force_overwrite
+        remove_array_tilt=remove_array_tilt,
+        remove_pattern=remove_pattern,
+        force_overwrite=force_overwrite,
     )
 
 
 @check_output_exists(
-    lambda remove_array_tilt: _wavefront_values_path(remove_array_tilt)
+    lambda remove_array_tilt, remove_pattern: _wavefront_values_path(
+        remove_array_tilt, remove_pattern
+    )
 )
-def _compute_wavefront_values(remove_array_tilt):
+def _compute_wavefront_values(remove_array_tilt, remove_pattern):
     dss = tools.open_receptions()
     wavefront_values = tools.get_wavefront_values(
-        dss, remove_array_tilt=remove_array_tilt
+        dss, remove_array_tilt=remove_array_tilt, remove_pattern=remove_pattern
     )
 
-    with _wavefront_values_path(remove_array_tilt).open("wb") as f:
+    with _wavefront_values_path(remove_array_tilt, remove_pattern).open("wb") as f:
         pickle.dump(wavefront_values, f)
+
+
+@check_output_exists(tools.hydrophone_pattern_path)
+def estimate_hydrophone_pattern():
+    """
+    Estimate the phase and gain of each lower-array hydrophone from the wavefront values with the array tilt
+    removed and no pattern removed (`tools.estimate_hydrophone_pattern`), write it to
+    ``hydrophone_pattern.pkl``, print it, and save a diagnostic plot to ``hydrophone_pattern.png``.
+    """
+    wavefront_values = _load_wavefront_values(True)
+    pattern = tools.estimate_hydrophone_pattern(wavefront_values)
+
+    path = tools.hydrophone_pattern_path()
+    with path.open("wb") as f:
+        pickle.dump(pattern, f)
+
+    print("=" * 60)
+    print(hydrophone_pattern_report(pattern))
+    print("=" * 60)
+
+    fig = plot_hydrophone_pattern(pattern)
+    fig.savefig(path.with_suffix(".png"), dpi=200, bbox_inches="tight")
+    print(f"Wrote {path} and {path.with_suffix('.png')}")
+    return pattern
+
+
+def hydrophone_pattern_report(pattern):
+    """Per-element table and the rejected arrivals and records of `tools.estimate_hydrophone_pattern`."""
+    lines = [
+        f"{'element':>7} {'phase [rad]':>16} {'delay [ms]':>16} {'gain':>16}",
+    ]
+    for n in range(len(pattern["phase"])):
+        lines.append(
+            f"{n:>7} {pattern['phase'][n]:+8.3f} ± {pattern['phase_se'][n]:5.3f}"
+            f" {1e3 * pattern['delay'][n]:+8.3f} ± {1e3 * pattern['delay_se'][n]:5.3f}"
+            f" {pattern['gain'][n]:8.3f} ± {pattern['gain_se'][n]:5.3f}"
+        )
+    for key in ("phase", "gain"):
+        rejected = pattern["rejected_arrivals"][key]
+        arrivals = ", ".join(f"{a} (p = {p:.1e})" for a, p in rejected.items())
+        records = ", ".join(
+            f"{a}: {txs}" for a, txs in pattern["rejected_records"][key].items()
+        )
+        lines += [
+            f"{key}: {len(pattern['arrivals'][key])} arrivals, {pattern['n_records'][key]} records",
+            f"  rejected arrivals: {arrivals or 'none'}",
+            f"  rejected records (transmissions): {records or 'none'}",
+        ]
+    lines.append(f"omitted arrivals: {', '.join(pattern['omit']) or 'none'}")
+    return "\n".join(lines)
+
+
+def plot_hydrophone_pattern(pattern):
+    """Phase (and delay) and gain along the array with their jackknife standard errors, over each arrival's
+    own pattern (rejected arrivals dashed)."""
+    fig, axes = plt.subplots(2, 1, figsize=(7, 6), sharex=True)
+    for ax, key, label in (
+        (axes[0], "phase", "phase [rad]"),
+        (axes[1], "gain", "gain"),
+    ):
+        el = np.arange(len(pattern[key]))
+        for ray_id, p in pattern["per_arrival"][key].items():
+            rejected = ray_id in pattern["rejected_arrivals"][key]
+            ax.plot(
+                el,
+                p,
+                color="C3" if rejected else "0.6",
+                ls="--" if rejected else "-",
+                lw=0.8,
+                alpha=0.8 if rejected else 0.4,
+            )
+        ax.errorbar(
+            el,
+            pattern[key],
+            yerr=pattern[f"{key}_se"],
+            color="k",
+            marker="o",
+            ms=3,
+            capsize=2,
+        )
+        ax.set_ylabel(label)
+        ax.grid(alpha=0.3)
+    delay_axis = axes[0].secondary_yaxis(
+        "right",
+        functions=(
+            lambda phi: 1e3 * phi / (2 * np.pi * pattern["f0"]),
+            lambda tau: 2 * np.pi * pattern["f0"] * tau / 1e3,
+        ),
+    )
+    delay_axis.set_ylabel("delay [ms]")
+    axes[1].set_xlabel("element")
+    axes[0].set_title(
+        "hydrophone pattern (black: pooled ± jackknife SE; dashed: rejected arrivals)"
+    )
+    return fig
 
 
 @check_output_exists(
@@ -518,37 +636,43 @@ def compute_mean_pulse():
     )
 
 
-def phi_chi_LS_fit(remove_array_tilt=None, force_overwrite=False):
+def phi_chi_LS_fit(remove_array_tilt=None, remove_pattern=None, force_overwrite=False):
     """
     Fit the GM energy and observational noise levels to the observed ɸ and χ spectra.
 
     The spectra are estimated from ``wavefront_values_tilt_removed.pkl`` with the array tilt removed
     and the fit is written to ``phi_chi_LS_fit_tilt_removed.pkl``, otherwise from
-    ``wavefront_values.pkl`` to ``phi_chi_LS_fit.pkl``. The user is asked whether to remove the tilt
-    when `remove_array_tilt` is None.
+    ``wavefront_values.pkl`` to ``phi_chi_LS_fit.pkl``. A removed hydrophone pattern adds the same
+    suffix to both (`tools.wavefront_values_path`). The user is asked whether to remove the tilt and
+    the pattern when `remove_array_tilt` and `remove_pattern` are None.
     """
     if remove_array_tilt is None:
         remove_array_tilt = _ask_remove_array_tilt()
+    if remove_pattern is None:
+        remove_pattern = _ask_remove_pattern()
     _compute_phi_chi_LS_fit(
         remove_array_tilt=remove_array_tilt,
+        remove_pattern=remove_pattern,
         force_overwrite=force_overwrite,
     )
 
 
 @check_output_exists(
-    lambda remove_array_tilt: tools.phi_chi_LS_fit_path(remove_array_tilt)
+    lambda remove_array_tilt, remove_pattern: tools.phi_chi_LS_fit_path(
+        remove_array_tilt, remove_pattern
+    )
 )
-def _compute_phi_chi_LS_fit(remove_array_tilt):
+def _compute_phi_chi_LS_fit(remove_array_tilt, remove_pattern):
     m_data, _, _, F_phi_lm, F_phi_ls, F_chi_lm, F_chi_ls = tools.estimate_F_phi_chi(
-        remove_array_tilt=remove_array_tilt
+        remove_array_tilt=remove_array_tilt, remove_pattern=remove_pattern
     )
     results = tools.fit_F_phi_chis(m_data, F_phi_lm, F_chi_lm, F_phi_ls, F_chi_ls)
 
-    with tools.phi_chi_LS_fit_path(remove_array_tilt).open("wb") as f:
+    with tools.phi_chi_LS_fit_path(remove_array_tilt, remove_pattern).open("wb") as f:
         pickle.dump(results, f)
 
 
-def coherence_lengths(remove_array_tilt=None):
+def coherence_lengths(remove_array_tilt=None, remove_pattern=None):
     """
     Print a LaTeX table of the observed (Gaussian fit to the mutual coherence) and theoretical (1GM path
     integral) vertical coherence lengths and coherence times for each ray.
@@ -557,13 +681,15 @@ def coherence_lengths(remove_array_tilt=None):
     Ducted_VC figure, and reported ± its leave-one-transmission-out jackknife standard deviation
     (`tools.jackknife_vertical_coherence`).
 
-    The user is asked whether to use the wavefront values with the array tilt removed when
-    `remove_array_tilt` is None.
+    The user is asked whether to use the wavefront values with the array tilt and the hydrophone pattern
+    removed when `remove_array_tilt` and `remove_pattern` are None.
     """
     if remove_array_tilt is None:
         remove_array_tilt = _ask_remove_array_tilt()
+    if remove_pattern is None:
+        remove_pattern = _ask_remove_pattern()
 
-    wavefront_values = _load_wavefront_values(remove_array_tilt)
+    wavefront_values = _load_wavefront_values(remove_array_tilt, remove_pattern)
 
     print("Estimating observed coherence lengths...")
     observed = tools.estimate_observed_coherence_lengths(wavefront_values)
@@ -577,7 +703,7 @@ def coherence_lengths(remove_array_tilt=None):
     return table
 
 
-def gm_levels(remove_array_tilt=None):
+def gm_levels(remove_array_tilt=None, remove_pattern=None):
     """
     Print a LaTeX table of the GM energy levels fitted to the observed ɸ and χ spectra (WFT) and to the
     vertical coherence (path integral), ± their jackknife standard errors.
@@ -587,21 +713,25 @@ def gm_levels(remove_array_tilt=None):
     jackknife `tools.jackknife_F_phi_chi_fit`. The coherence level is fitted here
     (`tools.fit_GM_vertical_coherence`), to D = -2 ln VC of the same wavefront values.
 
-    The user is asked whether to use the wavefront values with the array tilt removed when
-    `remove_array_tilt` is None.
+    The user is asked whether to use the wavefront values with the array tilt and the hydrophone pattern
+    removed when `remove_array_tilt` and `remove_pattern` are None.
     """
     if remove_array_tilt is None:
         remove_array_tilt = _ask_remove_array_tilt()
+    if remove_pattern is None:
+        remove_pattern = _ask_remove_pattern()
 
-    wavefront_values = _load_wavefront_values(remove_array_tilt)
+    wavefront_values = _load_wavefront_values(remove_array_tilt, remove_pattern)
 
-    path = tools.phi_chi_LS_fit_path(remove_array_tilt)
+    path = tools.phi_chi_LS_fit_path(remove_array_tilt, remove_pattern)
     if path.exists():
         with path.open("rb") as f:
             results = pickle.load(f)
         print("Jackknifing the ɸ χ GM fit...")
         m_data, F_phi_data, F_chi_data, _, F_phi_ls, _, F_chi_ls = (
-            tools.estimate_F_phi_chi(remove_array_tilt=remove_array_tilt)
+            tools.estimate_F_phi_chi(
+                remove_array_tilt=remove_array_tilt, remove_pattern=remove_pattern
+            )
         )
         spectral = tools.jackknife_F_phi_chi_fit(
             results, m_data, F_phi_data, F_chi_data, F_phi_ls, F_chi_ls
@@ -622,10 +752,15 @@ def gm_levels(remove_array_tilt=None):
     return table
 
 
-def _load_wavefront_values(remove_array_tilt):
-    wavefront_values_path = tools.wavefront_values_path(remove_array_tilt)
+def _load_wavefront_values(remove_array_tilt, remove_pattern="none"):
+    wavefront_values_path = tools.wavefront_values_path(
+        remove_array_tilt, remove_pattern
+    )
     if not wavefront_values_path.exists():
-        mode = " (array tilt removed)" if remove_array_tilt else ""
+        removed = ["array tilt"] if remove_array_tilt else []
+        if remove_pattern != "none":
+            removed.append(f"hydrophone {remove_pattern} pattern")
+        mode = f" ({', '.join(removed)} removed)" if removed else ""
         raise FileNotFoundError(
             f"Wavefront values{mode} not found at {wavefront_values_path}. "
             "Please run 'compute wavefront values' first."
@@ -634,22 +769,26 @@ def _load_wavefront_values(remove_array_tilt):
         return pickle.load(f)
 
 
-def independence_test(remove_array_tilt=None):
+def independence_test(remove_array_tilt=None, remove_pattern=None):
     """
     Print the transmission independence test (lag-1 autocorrelation of the per-transmission estimates over the
     hourly transmissions) for the ɸ and χ spectra and for the vertical coherence, the assumption of their
     jackknife error bars.
 
-    The user is asked whether to use the wavefront values with the array tilt removed when
-    `remove_array_tilt` is None.
+    The user is asked whether to use the wavefront values with the array tilt and the hydrophone pattern
+    removed when `remove_array_tilt` and `remove_pattern` are None.
     """
     if remove_array_tilt is None:
         remove_array_tilt = _ask_remove_array_tilt()
+    if remove_pattern is None:
+        remove_pattern = _ask_remove_pattern()
 
-    wavefront_values = _load_wavefront_values(remove_array_tilt)
+    wavefront_values = _load_wavefront_values(remove_array_tilt, remove_pattern)
 
     print("Testing the ɸ and χ spectra...")
-    F_results = tools.independence_test_F_phi_chi(remove_array_tilt=remove_array_tilt)
+    F_results = tools.independence_test_F_phi_chi(
+        remove_array_tilt=remove_array_tilt, remove_pattern=remove_pattern
+    )
     print("Testing the vertical coherence...")
     vc_result = tools.independence_test_vertical_coherence(wavefront_values)
 
