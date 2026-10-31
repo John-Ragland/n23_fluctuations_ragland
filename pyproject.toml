@@ -110,7 +110,7 @@ report.exclude_also = [
 
 
 [tool.ruff]
-extend-exclude = ["notebooks", "dev", "panel_apps", "src/archive.py", "*.ipynb"]
+extend-exclude = ["notebooks", "dev", "panel_apps", "analysis", "src/archive.py", "*.ipynb"]
 
 [tool.ruff.lint]
 extend-select = [

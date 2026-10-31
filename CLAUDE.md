@@ -39,6 +39,29 @@ uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dash
     `open_array_tilt`, `array_tilt.pkl`) instead of the per-transmission picked angle. The tilt is
     the mean over rays of the demeaned picked angles. It omits `ARRAY_TILT_OMIT`, the rays with the
     fewest good QC flags.
+  - `get_wavefront_values(..., remove_pattern=...)` also takes `"none"`, `"phase"`, `"magnitude"` or `"both"`
+    (`REMOVE_PATTERN_CHOICES`). This removes the per-hydrophone pattern (`open_hydrophone_pattern`,
+    `hydrophone_pattern.pkl`) from each receptions window before beamforming (`remove_hydrophone_pattern`).
+    The phase is removed as a **time delay** τ_n = φ_n/(2π·250 Hz), applied like the beamformer's steering
+    delays (exp(i(ω+ω₀)d) with d = −τ_n), so it is e^{−iφ_n} only at the carrier. The magnitude is removed
+    by dividing by the gain g_n. `wavefront_values_path(tilt, pattern)` and `phi_chi_LS_fit_path` add
+    `_phase_removed` / `_magnitude_removed` / `_phase_magnitude_removed`. `"none"` keeps the old names.
+    With the phase removed, `estimate_F_phi_chi(remove_pattern=...)` uses all 28 elements and does not
+    zero-fill 4, 5 and 20.
+  - `estimate_hydrophone_pattern(wavefront_values)` estimates the pattern. It reads the tilt-removed,
+    unpatterned wavefront values of every lower arrival except `ARRAY_TILT_OMIT`, ducted and bottom-bounced,
+    pooled. Phase uses the phasor-step method of `estimation.circular_common_phase` and is then linearly
+    detrended, since a line is a beam-angle error. Gain is the mean of |X| over its record's array mean,
+    normalized to unit mean. SEs are a leave-one-transmission-out jackknife. Outliers are rejected
+    automatically, in place of visual QC, separately for phase and gain:
+    (1) an iterated per-arrival test against the pooled pattern of the other arrivals, using
+    per-element Welch t statistics mapped to normal scores, summed as χ², Bonferroni α = 0.01
+    (`_pattern_difference_p_value`). Plain d²/var on the noisy jackknife variances rejected on 10–19% of
+    clean synthetic runs. The calibrated test rejects on 2–4%.
+    (2) robust z (MAD) > 3.5 on each record's rms residual.
+    On the real data (2026-10-30) elements 4, 5 and 20 come out at −0.87/−0.59/−1.11 ± 0.06 rad.
+    The phase test rejects `+7`, `-6`, `+7b`, `+9b`, `+13b` and `+15b`, which mostly differ by a smooth
+    bowl (curvature) along the array, not at single elements.
   - `jackknife_vertical_coherence(X, dz)` is the observed vertical coherence used by `Ducted_VC`
     and the CLI coherence-lengths table. It takes the unnormalized mutual coherence, divides it by the
     amplitude A0 of a Gaussian fit to the nonzero lags (`fit_vertical_coherence`), and adds
@@ -114,7 +137,11 @@ uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dash
   φ/χ least-squares fit), each step decorated with `check_output_exists` to skip/overwrite cached outputs.
   Wavefront values, the φ/χ fit, the coherence-lengths table and the independence test each ask "Remove array tilt?"
   (default yes) and read/write the `*_tilt_removed.pkl` products when it's yes; `run_all_processing()`
-  runs both modes of the wavefront values and the fit.
+  runs both modes of the wavefront values and the fit. The same entries also ask "Remove hydrophone
+  pattern?" (none/phase/magnitude/both, default none). `run_all_processing()` always uses `none`.
+  "estimate hydrophone pattern" reads `wavefront_values_tilt_removed.pkl` and writes `hydrophone_pattern.pkl`
+  and a diagnostic `hydrophone_pattern.png` (`hydrophone_pattern_report`, `plot_hydrophone_pattern`). It has
+  to run before any pattern-removed wavefront values.
   `run_all_processing()` chains all steps; `serve_panel_apps()` shells out to `panel serve` on `panel_apps/`.
   Two more menu entries drive the publication figures: "create publication figures config" copies
   the template to a `config.yaml`, and "generate publication figures" builds from one.
@@ -136,6 +163,8 @@ uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dash
     `Ducted_Intensity_Distribution` and `Ducted_VC`, and the matching φ/χ fit
     (`phi_chi_LS_fit_tilt_removed.pkl` vs `phi_chi_LS_fit.pkl`) for `F_phi_chi_ducted`.
     The notebooks still use `remove_array_tilt=False` and `phi_chi_LS_fit.pkl`.
+  - The config's `remove_pattern` (`none` default, `phase`, `magnitude`, `both`) picks the
+    pattern-removed variants of the same files (`tools.wavefront_values_path`).
   - The config's `spectra_model` picks the `F_phi_chi_ducted` model curves: `fit` (default, the notebook) draws
     the least-squares GM level with model + noise dashed and the fit text box; `gm_levels` draws 1× GM (solid)
     and 2× GM (dashed) without noise or the fit, with a shared GM legend strip as in `Ducted_VC` (−8 overlay:
@@ -166,7 +195,9 @@ uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dash
   mode 1. Only the rays in `ray_ids` are synthesized, so `all_arrivals` pools just those there. The wavefront
   source never affects the synthetic runs, so variants that differ only in it give
   identical synthetic results. The observed common pattern enters them only with
-  `synthetic.common_pattern: observed`.
+  `synthetic.common_pattern: observed`. The sources `tilt_removed_phase`, `tilt_removed_magnitude` and
+  `tilt_removed_both` (`WAVEFRONT_FILES`) read the wavefront values with the hydrophone pattern removed
+  in the time domain, for comparison with the phasor-domain `common_phase`.
 - **`src/n23_fluctuations_ragland/theory_environments.py`** — runs the analysis' own theory code on other
   environments, to tell environment effects from code effects in the WFT vs path-integral gap. An environment
   is a Dataset `c` [m/s], `N` [cph], `dcdz_p` [1/s] on `(depth, range)`, source at range 0 (the contract of
@@ -187,6 +218,13 @@ uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dash
   `EIG_INDEXS` for `+7, -7, +6, -6`, but **not** for `+7b` (reciprocity gives (1, 2), hand-picked (1, 0)) or
   `-5b`. `compute_n23_ray_variables(eig_indexs="reciprocity")` uses it; the default (`None`) is still
   `EIG_INDEXS`. `run_rays` and `compute_n23_ray_variables` both default to `tools.fctd_environment()`.
+- **`analysis/`** holds one-off diagnostic studies, one directory each, with the scripts, their figures and a
+  README of findings. It is not part of the package and is excluded from ruff. Large cached inputs are
+  gitignored and regenerated by the scripts. `analysis/hydrophone_pattern/` covers the hydrophone pattern
+  estimate and the effect of its removal on the ducted spectra and vertical coherence.
+  `analysis/minus_6_interference/` covers how the bottom-bounced `-6b` overlaps the ducted `+6`/`+7` wavefronts.
+  Its plane-wave line is t_n = t₀ − (z_n − z̄)·sinθ/c: the beamformer convention puts negative angles
+  later with depth. The picks are in nominal depth, which is ~100 m shallower than the actual depth the mean pulse uses.
 - **`src/archive.py`** — dead/archived code, excluded from linting; not maintained.
 - **`panel_apps/source_geometry_sweep.py`** — standalone Panel dashboard visualizing the source-geometry
   grid-search ray-tracing results; not part of the installable package.
@@ -210,6 +248,8 @@ uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dash
   `NESCAFE23_DATADIR/dataproducts/`.
 - Data products live under `NESCAFE23_DATADIR/dataproducts/`: pickles (`ray_run_forward_back.pkl`,
   `wavefront_values.pkl`, `wavefront_values_tilt_removed.pkl`, `array_tilt.pkl`, `peak_locations.pkl`, `ray_geo_sweep.pkl`, `phi_chi_LS_fit.pkl`, `phi_chi_LS_fit_tilt_removed.pkl`,
+  `hydrophone_pattern.pkl`, the `*_phase_removed` / `*_magnitude_removed` / `*_phase_magnitude_removed` variants of the
+  wavefront values and fits,
   `T_t_estimated.pkl`) and NetCDF (`mean_pulse_*.nc`). Raw transmissions come from `.mat` files under
   `dmod/`. Figures are saved as PDFs to `figures/`.
 - Notebooks are stripped of outputs via `nbstripout` as a git filter — run `nbstripout --install` locally.
