@@ -411,6 +411,36 @@ def test_fit_vertical_coherence_recovers_gaussian():
     assert np.isclose(z0, 120.0)
 
 
+def test_fit_vertical_coherence_converges_at_large_amplitude():
+    """A0 ~ 5e12 and a short z0 (the +7 case that stopped at the old fixed initial guess) are recovered,
+    whatever the initial coherence length."""
+    import numpy as np
+
+    from n23_fluctuations_ragland import tools
+
+    dz = np.arange(0, 28 * 9.0, 9.0)
+    MC = tools.gaussian_coherence_model(dz, 4.84e12, 58.0)
+    for L0 in (20.0, 100.0, 400.0):
+        A0, z0 = tools.fit_vertical_coherence(dz, MC, L0=L0)
+        assert np.isclose(A0, 4.84e12, rtol=1e-6)
+        assert np.isclose(z0, 58.0, rtol=1e-6)
+
+
+def test_fit_vertical_coherence_raises_on_failure():
+    """A coherence that is not positive at the first nonzero lag can't be fitted, and raises instead of
+    returning a value."""
+    import numpy as np
+    import pytest
+
+    from n23_fluctuations_ragland import tools
+
+    dz = np.arange(0, 28 * 9.0, 9.0)
+    MC = np.full(dz.shape, -1e10)
+    MC[0] = 3e11
+    with pytest.raises(ValueError, match="A0_init"):
+        tools.fit_vertical_coherence(dz, MC)
+
+
 def test_estimate_array_tilt_recovers_tilt():
     """The tilt common to all rays is recovered, omitted rays are excluded but still get angles."""
     import numpy as np
@@ -699,7 +729,9 @@ def test_jackknife_vertical_coherence():
     assert vc["MC_jk"].shape == (M, N)
     assert vc["A0_jk"].shape == vc["z0_jk"].shape == (M,)
     np.testing.assert_allclose(vc["VC"], vc["MC"] / vc["A0"])
-    assert np.isclose(vc["z0"], 90.0, rtol=0.3)
+    # over seeds the fitted z0 has median 89 m and sd 20 m; this seed gives 119 m (92nd percentile). It
+    # passed rtol=0.3 before only because the old unscaled fit stopped early near its 100 m initial guess.
+    assert np.isclose(vc["z0"], 90.0, rtol=0.4)
     assert np.all(vc["VC_var"] >= 0)
     assert np.isfinite(vc["z0_var"])
     assert vc["z0_var"] > 0

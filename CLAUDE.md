@@ -69,6 +69,13 @@ uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dash
     refitting A0 in each sample. That deliberately differs from `Vertical_Coherence.ipynb` cell 9,
     which divides Var[MC_k] by the full-data A0². Because MC_k and A0_k share the per-transmission
     intensity fluctuation, the ratio's bars are several times smaller at short lags.
+    Since 2026-11-02 `fit_vertical_coherence` starts from `A0_init = MC[1]` and fits in scaled parameters
+    (z0/L0, A0/A0_init), and it **raises** `ValueError` instead of returning NaN or a silently bad fit.
+    The old fixed start (A0 = 4e11) plus `x_scale="jac"` made `least_squares` stop on `xtol` at the initial
+    guess while reporting success. That happened on 12/23 leave-one-out refits of `+7` with the pattern
+    removed, and it sent the `Ducted_VC` (a) error bars to ±27. Other fits stopped short of the minimum.
+    Rays whose MC[1] ≤ 0 (`-6b`, every product) can't be fitted, so the CLI coherence-lengths table fits
+    only `DUCTED_RAY_IDS`.
   - `estimate_F_phi_chi` returns `F_*_lm`, the log-mean of the per-transmission periodograms with its
     bias removed (`_jackknife_log_mean`). A raw log-mean of χ²₂ bins is low by γ/ln10 = 0.251
     decades (×0.56), and by 0.552 decades at the 1-dof Nyquist bin of the 28-phone record. It also

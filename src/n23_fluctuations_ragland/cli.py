@@ -719,7 +719,8 @@ def coherence_lengths(remove_array_tilt=None, remove_pattern=None):
 
     The observed z0 is fitted to the nonzero lags of the unnormalized mutual coherence, as in the
     Ducted_VC figure, and reported ± its leave-one-transmission-out jackknife standard deviation
-    (`tools.jackknife_vertical_coherence`).
+    (`tools.jackknife_vertical_coherence`). Only the ducted rays (`tools.DUCTED_RAY_IDS`) are fitted: the
+    fit raises on rays such as ``-6b`` whose coherence is negative at the first nonzero lag.
 
     The user is asked whether to use the wavefront values with the array tilt and the hydrophone pattern
     removed when `remove_array_tilt` and `remove_pattern` are None.
@@ -732,7 +733,9 @@ def coherence_lengths(remove_array_tilt=None, remove_pattern=None):
     wavefront_values = _load_wavefront_values(remove_array_tilt, remove_pattern)
 
     print("Estimating observed coherence lengths...")
-    observed = tools.estimate_observed_coherence_lengths(wavefront_values)
+    observed = tools.estimate_observed_coherence_lengths(
+        {ray_id: wavefront_values[ray_id] for ray_id in tools.DUCTED_RAY_IDS}
+    )
     print("Computing theoretical (1GM) coherence lengths...")
     theory = tools.compute_theoretical_coherence_lengths()
 

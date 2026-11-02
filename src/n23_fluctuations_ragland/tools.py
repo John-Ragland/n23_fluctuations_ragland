@@ -2318,10 +2318,19 @@ def fit_coherence_length(lags, MC, L0: float):
     return float(popt[0]), float(popt[1])
 
 
-def fit_vertical_coherence(dz, MC, L0: float = 100.0, A0_init: float = 4e11):
+def fit_vertical_coherence(dz, MC, L0: float = 100.0, A0_init: float | None = None):
     r"""
     Least squares fit of `gaussian_coherence_model` to the nonzero lags of an unnormalized mutual
     coherence. The zero lag is biased by noise and is omitted from the fit.
+
+    The fit is made in scaled parameters, $z_0 / L_0$ and $A_0 / A_{0,\mathrm{init}}$, both starting at 1,
+    with the residuals divided by $A_{0,\mathrm{init}}$. Unscaled, $A_0 \sim 10^{12}$ and $z_0 \sim 10^2$,
+    and ``least_squares`` (even with ``x_scale="jac"``) sometimes stopped on its ``xtol`` test at the
+    initial guess or short of the minimum while still reporting success. That made 12 of the 23
+    leave-one-out refits of ``+7`` (tilt and pattern removed) return the initial guess, which blew up
+    the `jackknife_vertical_coherence` error bars of ``Ducted_VC``. Checked on 2026-11-02 against a
+    20-start grid on every ray, product and leave-one-out subset: the scaled fit reaches the best
+    minimum on all of them except ``-6b``, whose coherence is already negative at the first lag.
 
     Parameters
     ----------
@@ -2331,37 +2340,54 @@ def fit_vertical_coherence(dz, MC, L0: float = 100.0, A0_init: float = 4e11):
         unnormalized mutual coherence estimate at `dz`
     L0 : float
         initial guess of the coherence length, in units of `dz`
-    A0_init : float
-        initial guess of the amplitude, in units of `MC`
+    A0_init : float, optional
+        initial guess of the amplitude, in units of `MC`, and the scale of the amplitude and the
+        residuals. Default is ``MC[1]``, the coherence at the first nonzero lag.
 
     Returns
     -------
     A0 : float
-        fitted amplitude, NaN if the fit fails
+        fitted amplitude
     z0 : float
-        fitted coherence length in units of `dz`, NaN if the fit fails
+        fitted coherence length in units of `dz`
+
+    Raises
+    ------
+    ValueError
+        if `A0_init` (by default ``MC[1]``) is not positive and finite, or the fit fails: the optimizer
+        reports failure, or either parameter ends on its lower bound of zero.
     """
     dz = np.asarray(dz, dtype=float)[1:]
     MC = np.asarray(MC, dtype=float)[1:]
     valid = np.isfinite(dz) & np.isfinite(MC)
 
+    if A0_init is None:
+        A0_init = float(MC[0])
+    if not (np.isfinite(A0_init) and A0_init > 0):
+        msg = (
+            f"fit_vertical_coherence: A0_init must be positive and finite, got {A0_init:.3g} "
+            "(by default the coherence at the first nonzero lag, which is not positive when the "
+            "coherence decorrelates within one lag)"
+        )
+        raise ValueError(msg)
+
     def residuals(params):
         z0, A0 = params
-        return gaussian_coherence_model(dz[valid], A0, z0) - MC[valid]
+        return (
+            gaussian_coherence_model(dz[valid], A0 * A0_init, z0 * L0) - MC[valid]
+        ) / A0_init
 
-    try:
-        result = optimize.least_squares(
-            residuals,
-            x0=[L0, A0_init],
-            bounds=([0, 0], [np.inf, np.inf]),
-            x_scale="jac",  # z0 ~ 1e2 and A ~ 1e11 differ by many orders of magnitude
+    result = optimize.least_squares(
+        residuals, x0=[1.0, 1.0], bounds=([0, 0], [np.inf, np.inf])
+    )
+    z0, A0 = result.x * [L0, A0_init]
+    if not result.success or np.any(result.x <= 0):
+        msg = (
+            f"fit_vertical_coherence: the Gaussian fit failed ({result.message}), "
+            f"z0 = {z0:.3g}, A0 = {A0:.3g}"
         )
-    except (RuntimeError, ValueError, TypeError):
-        return np.nan, np.nan
-    if not result.success:
-        return np.nan, np.nan
+        raise ValueError(msg)
 
-    z0, A0 = result.x
     return float(A0), float(z0)
 
 

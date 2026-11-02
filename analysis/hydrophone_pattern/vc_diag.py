@@ -21,13 +21,6 @@ def load(v):
     return pickle.loads(path.read_bytes())
 
 
-# tools.fit_vertical_coherence starts from A0 = 4e11, ~10x below these MC, and least_squares sometimes stops
-# there (z0 = 100 m, A0 = 4e11) and reports success. Start it from the data's own scale instead.
-_fit = tools.fit_vertical_coherence
-tools.fit_vertical_coherence = lambda dz, MC, L0=100.0, A0_init=None: _fit(
-    dz, MC, L0, np.asarray(MC)[1] if A0_init is None else A0_init
-)
-
 rays = ["+7", "-7", "+6", "-6"]
 vc = {v: {r: tools.jackknife_vertical_coherence(load(v)[r], 9) for r in rays} for v in VARIANTS}
 
