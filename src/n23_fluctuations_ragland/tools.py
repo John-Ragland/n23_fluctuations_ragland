@@ -229,21 +229,35 @@ def wavefront_values_path(remove_array_tilt, remove_pattern="none"):
     return get_data_dir() / "dataproducts" / fn
 
 
-def _spectral_method_suffix(hann=True, first_difference=False):
+SPECTRAL_WINDOWS = ("hann", "tukey", "rectangular")
+"""Taper windows of `estimate_F_phi_chi`. ``"hann"`` is the default."""
+
+TUKEY_ALPHA = 0.3
+"""Fraction of the record inside the cosine tapers of the ``"tukey"`` window (0.15 at each end)."""
+
+
+def _spectral_method_suffix(window="hann", first_difference=False):
     """File-name suffix of a spectral estimation method of `estimate_F_phi_chi`. The default (Hann, no first
     difference) has none, so its products keep their old names."""
+    _check_spectral_window(window)
     return ("_first_difference" if first_difference else "") + (
-        "" if hann else "_rectangular"
+        "" if window == "hann" else f"_{window}"
     )
 
 
+def _check_spectral_window(window):
+    if window not in SPECTRAL_WINDOWS:
+        msg = f"window must be one of {SPECTRAL_WINDOWS}, got {window!r}"
+        raise ValueError(msg)
+
+
 def phi_chi_LS_fit_path(
-    remove_array_tilt, remove_pattern="none", hann=True, first_difference=False
+    remove_array_tilt, remove_pattern="none", window="hann", first_difference=False
 ):
     """
     Path of the cached ɸ χ GM least squares fit,
-    ``dataproducts/phi_chi_LS_fit[_tilt_removed][...][_first_difference][_rectangular].pkl``, with the
-    suffixes of `wavefront_values_path` and then of the spectral estimation method.
+    ``dataproducts/phi_chi_LS_fit[_tilt_removed][...][_first_difference][_rectangular|_tukey].pkl``, with
+    the suffixes of `wavefront_values_path` and then of the spectral estimation method.
 
     Parameters
     ----------
@@ -251,14 +265,15 @@ def phi_chi_LS_fit_path(
         If True, the path of the fit to the wavefront values with the array tilt removed.
     remove_pattern : str
         hydrophone pattern removed before beamforming, one of `REMOVE_PATTERN_CHOICES`. Default is ``"none"``.
-    hann : bool
-        spectra tapered with a Hann window (default, no suffix); False adds ``_rectangular``
+    window : str
+        taper of the spectra, one of `SPECTRAL_WINDOWS`: ``"hann"`` (default, no suffix), ``"tukey"`` (adds
+        ``_tukey``) or ``"rectangular"`` (adds ``_rectangular``)
     first_difference : bool
         spectra estimated by first differencing and postcoloring; True adds ``_first_difference``
     """
     fn = (
         f"phi_chi_LS_fit{_product_suffix(remove_array_tilt, remove_pattern)}"
-        f"{_spectral_method_suffix(hann, first_difference)}.pkl"
+        f"{_spectral_method_suffix(window, first_difference)}.pkl"
     )
     return get_data_dir() / "dataproducts" / fn
 
@@ -3158,13 +3173,25 @@ def _jackknife_log_mean(F, dof):
     return lm, 10 ** np.sqrt(_jackknife_var(mean_jk))
 
 
+def _taper_window(n: int, window: str = "hann"):
+    """
+    Periodic taper of length `n`, one of `SPECTRAL_WINDOWS`, scaled to unit mean square so that it leaves the
+    expected periodogram of white noise, and so its total power, unchanged. ``"tukey"`` has
+    ``alpha = TUKEY_ALPHA``; ``"rectangular"`` is all ones.
+    """
+    _check_spectral_window(window)
+    if window == "hann":
+        taper = signal.windows.hann(n, sym=False)
+    elif window == "tukey":
+        taper = signal.windows.tukey(n, TUKEY_ALPHA, sym=False)
+    else:
+        taper = np.ones(n)
+    return taper / np.sqrt(np.mean(taper**2))
+
+
 def _hann_window(n: int):
-    """
-    Periodic Hann window of length `n`, scaled to unit mean square so that it leaves the expected periodogram
-    of white noise, and so its total power, unchanged.
-    """
-    window = signal.windows.hann(n, sym=False)
-    return window / np.sqrt(np.mean(window**2))
+    """Periodic Hann window of length `n`, scaled to unit mean square (`_taper_window`)."""
+    return _taper_window(n, "hann")
 
 
 def _interpolate_nan_columns(x):
@@ -3189,7 +3216,7 @@ def _first_difference_postcolor(m, dz: float = 9):
 
 def estimate_F_phi_chi(
     remove_array_tilt: bool = False,
-    hann: bool = True,
+    window: str = "hann",
     remove_pattern: str = "none",
     first_difference: bool = False,
 ):
@@ -3200,19 +3227,20 @@ def estimate_F_phi_chi(
     domain, with the bias of the log-mean removed (`_jackknife_log_mean`). The uncertainty of the mean is the
     leave-one-transmission-out jackknife standard error.
 
-    Each depth record has its mean removed and is tapered with a Hann window (`_hann_window`) before the
-    periodogram. Without the taper the very red phase spectrum leaks into every bin and sets a floor that hides
-    the spectrum at high wavenumbers. The window has unit mean square, so white noise keeps its level, but
+    Each depth record has its mean removed and is tapered (`_taper_window`) before the periodogram, by default
+    with a Hann window. Without the taper the very red phase spectrum leaks into every bin and sets a floor that
+    hides the spectrum at high wavenumbers. The window has unit mean square, so white noise keeps its level, but
     variance at scales longer than the array, which shows up as a slope or curvature concentrated at the array
-    ends, is down-weighted.
+    ends, is down-weighted. The Tukey window (``alpha = TUKEY_ALPHA = 0.3``) is flat over the middle 70% of
+    the record and tapers only the ends, so it down-weights the array ends less than Hann, at the cost of
+    more leakage.
 
     With `first_difference`, each record is first-differenced along the array (prewhitened) before the
     optional taper, and the periodogram is postcolored by $1 / |2 \sin(\pi m \Delta z)|^2$
     (`_first_difference_postcolor`). The order is mean removal, first difference, Hann window, periodogram,
     postcoloring, as in `estimation.Estimator` (``prewhiten``) and ``analysis/spectral_estimation_methods``.
     The differenced record is one element shorter (27 of 28), so its wavenumbers are k / (27 x 9 m), with no
-    Nyquist bin. The four combinations are rectangular, Hann, first difference + rectangular and first
-    difference + Hann.
+    Nyquist bin. Each of the `SPECTRAL_WINDOWS` combines with or without first differencing.
 
     Elements 4, 5 and 20 carry a constant phase offset, so they are dropped from the phase, unless the phase of
     the hydrophone pattern was removed (`remove_pattern` ``"phase"`` or ``"both"``), which corrects them, and all
@@ -3224,8 +3252,9 @@ def estimate_F_phi_chi(
     ----------
     remove_array_tilt : bool
         If True, wavefront values with array tilt removed are used.
-    hann : bool
-        If True (default), taper with a Hann window. False gives the untapered (rectangular window) periodogram.
+    window : str
+        taper, one of `SPECTRAL_WINDOWS`: ``"hann"`` (default), ``"tukey"`` (``alpha = TUKEY_ALPHA``) or
+        ``"rectangular"`` (the untapered periodogram)
     remove_pattern : str
         hydrophone pattern removed from the wavefront values used (`wavefront_values_path`), one of
         `REMOVE_PATTERN_CHOICES`. Default is ``"none"``.
@@ -3253,6 +3282,7 @@ def estimate_F_phi_chi(
         spectral density, $F_\\chi$, as a multiplicative factor
     """
 
+    _check_spectral_window(window)
     with wavefront_values_path(remove_array_tilt, remove_pattern).open("rb") as f:
         wavefront_values = pickle.load(f)
     phase_removed = remove_pattern in ("phase", "both")
@@ -3290,10 +3320,10 @@ def estimate_F_phi_chi(
             lamp = np.diff(lamp, axis=1)
 
         # taper in depth
-        if hann:
-            window = _hann_window(phase.shape[1])
-            phase = phase * window
-            lamp = lamp * window
+        if window != "rectangular":
+            taper = _taper_window(phase.shape[1], window)
+            phase = phase * taper
+            lamp = lamp * taper
 
         # m_data [1/m]
         # F_phi_data [rad^2 m], F_chi_data [m], one-sided per cycle/m
@@ -3397,7 +3427,7 @@ def _independence_test_per_ray(samples_per_ray: dict, **kwargs):
 def independence_test_F_phi_chi(
     remove_array_tilt: bool = False,
     remove_pattern: str = "none",
-    hann: bool = True,
+    window: str = "hann",
     first_difference: bool = False,
     **kwargs,
 ):
@@ -3411,7 +3441,9 @@ def independence_test_F_phi_chi(
         If True, wavefront values with array tilt removed are used.
     remove_pattern : str
         hydrophone pattern removed from the wavefront values used, one of `REMOVE_PATTERN_CHOICES`
-    hann, first_difference : bool
+    window : str
+        taper, one of `SPECTRAL_WINDOWS`, see `estimate_F_phi_chi`
+    first_difference : bool
         spectral estimation method, see `estimate_F_phi_chi`
     **kwargs
         passed to `transmission_independence_test`
@@ -3425,7 +3457,7 @@ def independence_test_F_phi_chi(
     _, F_phi_data, F_chi_data, _, _, _, _ = estimate_F_phi_chi(
         remove_array_tilt=remove_array_tilt,
         remove_pattern=remove_pattern,
-        hann=hann,
+        window=window,
         first_difference=first_difference,
     )
     return {

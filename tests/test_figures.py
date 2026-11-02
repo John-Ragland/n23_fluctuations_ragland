@@ -105,15 +105,16 @@ def test_spectral_method_config(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text("{}\n")
     cfg = figures.load_config(path)
-    assert cfg.hann is True
+    assert cfg.window == "hann"
     assert cfg.first_difference is False
-    path.write_text("hann: false\nfirst_difference: true\n")
-    cfg = figures.load_config(path)
-    assert cfg.hann is False
-    assert cfg.first_difference is True
-    for bad in ("hann: 1\n", "first_difference: yes please\n"):
+    for window in ("tukey", "rectangular"):
+        path.write_text(f"window: {window}\nfirst_difference: true\n")
+        cfg = figures.load_config(path)
+        assert cfg.window == window
+        assert cfg.first_difference is True
+    for bad in ("window: hamming\n", "hann: false\n", "first_difference: yes please\n"):
         path.write_text(bad)
-        with pytest.raises(figures.ConfigError, match=r"hann|first_difference"):
+        with pytest.raises(figures.ConfigError, match=r"window|hann|first_difference"):
             figures.load_config(path)
 
 

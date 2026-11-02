@@ -49,13 +49,14 @@ remove_array_tilt: true
 remove_pattern: none
 
 # Spectral estimation method of the observed spectra in F_phi_chi_ducted (tools.estimate_F_phi_chi).
-# hann: taper each depth record with a Hann window (false = rectangular, untapered).
+# window: taper of each depth record: hann, tukey (alpha = 0.3, flat over the middle 70%) or
+# rectangular (untapered).
 # first_difference: first-difference each record along the array before the taper and postcolor the
 # periodogram by 1/|2 sin(pi m dz)|^2 (the record is then 27 elements, so the wavenumbers shift
 # slightly). With spectra_model: fit, the fit must be made with the same choices ('ɸ χ GM least
-# squares fit'); every choice but the default (hann true, first_difference false) adds a suffix to
-# the fit file: _first_difference and/or _rectangular (e.g. phi_chi_LS_fit_tilt_removed_first_difference.pkl).
-hann: true
+# squares fit'); every choice but the default (window hann, first_difference false) adds a suffix to
+# the fit file: _first_difference and/or _tukey / _rectangular (e.g. phi_chi_LS_fit_tilt_removed_tukey.pkl).
+window: hann
 first_difference: false
 
 # Model curves of F_phi_chi_ducted. fit = the least squares GM level and noise levels

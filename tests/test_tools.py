@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import scipy.integrate
 import xarray as xr
 
@@ -83,10 +84,14 @@ def _expected_white_periodogram(operator, sigma2: float, dz: float = 9.0):
     return S[1 : n // 2 + 1]
 
 
-def test_estimate_F_phi_chi_hann_is_unbiased_for_white_noise(tmp_path, monkeypatch):
+@pytest.mark.parametrize("window", ["hann", "tukey"])
+def test_estimate_F_phi_chi_taper_is_unbiased_for_white_noise(
+    tmp_path, monkeypatch, window
+):
     """
-    With the Hann taper, the estimated spectra of white phase and log-amplitude match the exact expected
-    periodogram of the estimator (mask/zero-fill of elements 4, 5, 20, demean, unit-mean-square Hann).
+    With the Hann or Tukey taper, the estimated spectra of white phase and log-amplitude match the exact
+    expected periodogram of the estimator (mask/zero-fill of elements 4, 5, 20, demean, unit-mean-square
+    taper).
     """
     import pickle
 
@@ -106,10 +111,10 @@ def test_estimate_F_phi_chi_hann_is_unbiased_for_white_noise(tmp_path, monkeypat
         lambda remove_array_tilt, remove_pattern="none": path,
     )
 
-    m, _, _, F_phi_lm, _, F_chi_lm, _ = tools.estimate_F_phi_chi(hann=True)
+    m, _, _, F_phi_lm, _, F_chi_lm, _ = tools.estimate_F_phi_chi(window=window)
 
-    window = tools._hann_window(n_el)
-    np.testing.assert_allclose(np.mean(window**2), 1)
+    taper = tools._taper_window(n_el, window)
+    np.testing.assert_allclose(np.mean(taper**2), 1)
 
     keep = np.ones(n_el)
     keep[[4, 5, 20]] = 0
@@ -117,8 +122,8 @@ def test_estimate_F_phi_chi_hann_is_unbiased_for_white_noise(tmp_path, monkeypat
         np.eye(n_el) - np.outer(np.ones(n_el), keep) / keep.sum()
     )
     demean = np.eye(n_el) - 1 / n_el
-    S_phi = _expected_white_periodogram(window[:, None] * demean_masked, s_phi**2)
-    S_chi = _expected_white_periodogram(window[:, None] * demean, s_chi**2)
+    S_phi = _expected_white_periodogram(taper[:, None] * demean_masked, s_phi**2)
+    S_chi = _expected_white_periodogram(taper[:, None] * demean, s_chi**2)
 
     for ray_id in F_phi_lm:
         # geometric mean of observed / expected over the bins

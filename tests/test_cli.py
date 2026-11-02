@@ -549,28 +549,37 @@ def test_phi_chi_LS_fit_paths_per_spectral_method(tmp_path, monkeypatch):
 
     monkeypatch.setattr(tools, "get_data_dir", lambda: tmp_path)
     names = {
-        (hann, fd): tools.phi_chi_LS_fit_path(True, "none", hann, fd).name
-        for hann in (True, False)
+        (window, fd): tools.phi_chi_LS_fit_path(True, "none", window, fd).name
+        for window in tools.SPECTRAL_WINDOWS
         for fd in (False, True)
     }
-    assert names[True, False] == "phi_chi_LS_fit_tilt_removed.pkl"
-    assert names[False, False] == "phi_chi_LS_fit_tilt_removed_rectangular.pkl"
-    assert names[True, True] == "phi_chi_LS_fit_tilt_removed_first_difference.pkl"
+    assert names["hann", False] == "phi_chi_LS_fit_tilt_removed.pkl"
+    assert names["rectangular", False] == "phi_chi_LS_fit_tilt_removed_rectangular.pkl"
+    assert names["tukey", False] == "phi_chi_LS_fit_tilt_removed_tukey.pkl"
+    assert names["hann", True] == "phi_chi_LS_fit_tilt_removed_first_difference.pkl"
     assert (
-        names[False, True]
+        names["rectangular", True]
         == "phi_chi_LS_fit_tilt_removed_first_difference_rectangular.pkl"
     )
     assert (
-        tools.phi_chi_LS_fit_path(False, "phase", True, True).name
+        names["tukey", True] == "phi_chi_LS_fit_tilt_removed_first_difference_tukey.pkl"
+    )
+    assert (
+        tools.phi_chi_LS_fit_path(False, "phase", "hann", True).name
         == "phi_chi_LS_fit_phase_removed_first_difference.pkl"
     )
+    with pytest.raises(ValueError, match="window"):
+        tools.phi_chi_LS_fit_path(True, "none", "hamming")
 
 
 @pytest.mark.parametrize("remove_array_tilt", [False, True])
 @pytest.mark.parametrize("remove_pattern", ["none", "phase", "both"])
-@pytest.mark.parametrize(("hann", "first_difference"), [(True, False), (False, True)])
+@pytest.mark.parametrize(
+    ("window", "first_difference"),
+    [("hann", False), ("rectangular", True), ("tukey", False), ("tukey", True)],
+)
 def test_phi_chi_LS_fit_uses_matching_wavefront_values(
-    tmp_path, monkeypatch, remove_array_tilt, remove_pattern, hann, first_difference
+    tmp_path, monkeypatch, remove_array_tilt, remove_pattern, window, first_difference
 ):
     """The fit estimates the spectra in the requested mode and saves to that mode's file."""
     import pickle
@@ -585,10 +594,10 @@ def test_phi_chi_LS_fit_uses_matching_wavefront_values(
     def fake_estimate(
         remove_array_tilt=False,
         remove_pattern="none",
-        hann=True,
+        window="hann",
         first_difference=False,
     ):
-        calls.append((remove_array_tilt, remove_pattern, hann, first_difference))
+        calls.append((remove_array_tilt, remove_pattern, window, first_difference))
         return "m", None, None, "phi_lm", "phi_ls", "chi_lm", "chi_ls"
 
     monkeypatch.setattr(cli_mod.tools, "estimate_F_phi_chi", fake_estimate)
@@ -601,14 +610,14 @@ def test_phi_chi_LS_fit_uses_matching_wavefront_values(
     cli_mod.phi_chi_LS_fit(
         remove_array_tilt=remove_array_tilt,
         remove_pattern=remove_pattern,
-        hann=hann,
+        window=window,
         first_difference=first_difference,
         force_overwrite=True,
     )
 
-    assert calls == [(remove_array_tilt, remove_pattern, hann, first_difference)]
+    assert calls == [(remove_array_tilt, remove_pattern, window, first_difference)]
     path = cli_mod.tools.phi_chi_LS_fit_path(
-        remove_array_tilt, remove_pattern, hann, first_difference
+        remove_array_tilt, remove_pattern, window, first_difference
     )
     with path.open("rb") as f:
         assert pickle.load(f) == {
@@ -633,7 +642,7 @@ def test_run_all_processing_fits_both_modes():
     assert source.count('"remove_array_tilt": True,') == 2
     assert source.count('"remove_array_tilt": False,') == 2
     # the fits use the default spectral method, so run all never prompts for it
-    assert source.count('"hann": True,') == 2
+    assert source.count('"window": "hann",') == 2
     assert source.count('"first_difference": False,') == 2
 
 

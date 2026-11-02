@@ -21,9 +21,10 @@ def _random_wavefronts(rng, n_tx=23, n=28, ray_ids=tools.DUCTED_RAY_IDS):
     return out
 
 
-def test_default_estimator_matches_estimate_F_phi_chi(tmp_path, monkeypatch):
+@pytest.mark.parametrize("window", tools.SPECTRAL_WINDOWS)
+def test_default_estimator_matches_estimate_F_phi_chi(tmp_path, monkeypatch, window):
     """The default `Estimator` is `tools.estimate_F_phi_chi` (Hann taper, mean removed, bad elements
-    4, 5, 20 zero-filled in phase, bias-corrected log-mean)."""
+    4, 5, 20 zero-filled in phase, bias-corrected log-mean), and so is each other taper."""
     wavefronts = _random_wavefronts(np.random.default_rng(1))
     path = tmp_path / "wavefront_values_tilt_removed.pkl"
     with path.open("wb") as f:
@@ -35,10 +36,12 @@ def test_default_estimator_matches_estimate_F_phi_chi(tmp_path, monkeypatch):
     )
 
     m, _, _, F_phi_lm, F_phi_ls, F_chi_lm, F_chi_ls = tools.estimate_F_phi_chi(
-        remove_array_tilt=True
+        remove_array_tilt=True, window=window
     )
     estimates = estimation.estimate_spectra(
-        wavefronts, estimation.Estimator(), tools.DUCTED_RAY_IDS
+        wavefronts,
+        estimation.Estimator(window=window, tukey_alpha=tools.TUKEY_ALPHA),
+        tools.DUCTED_RAY_IDS,
     )
     for ray_id, e in estimates.items():
         np.testing.assert_allclose(e.m, m)
@@ -48,10 +51,10 @@ def test_default_estimator_matches_estimate_F_phi_chi(tmp_path, monkeypatch):
         np.testing.assert_allclose(e.chi_ls, F_chi_ls[ray_id], rtol=1e-10)
 
 
-@pytest.mark.parametrize("hann", [True, False])
+@pytest.mark.parametrize("window", tools.SPECTRAL_WINDOWS)
 @pytest.mark.parametrize("remove_pattern", ["none", "phase"])
 def test_first_difference_matches_prewhitened_estimator(
-    tmp_path, monkeypatch, hann, remove_pattern
+    tmp_path, monkeypatch, window, remove_pattern
 ):
     """`tools.estimate_F_phi_chi(first_difference=True)` is the prewhitened `Estimator`: first difference, then
     the taper, then postcoloring, with the bad elements 4, 5, 20 linearly interpolated in phase (or kept when
@@ -68,14 +71,15 @@ def test_first_difference_matches_prewhitened_estimator(
 
     m, _, _, F_phi_lm, F_phi_ls, F_chi_lm, F_chi_ls = tools.estimate_F_phi_chi(
         remove_array_tilt=True,
-        hann=hann,
+        window=window,
         remove_pattern=remove_pattern,
         first_difference=True,
     )
     assert len(m) == 13  # 27 differenced samples
     est = estimation.Estimator(
         prewhiten=True,
-        window="hann" if hann else "rectangular",
+        window=window,
+        tukey_alpha=tools.TUKEY_ALPHA,
         bad_element_fill="linear",
         bad_elements=() if remove_pattern == "phase" else (4, 5, 20),
     )

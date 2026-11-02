@@ -85,26 +85,28 @@ uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dash
     because the spread is ~0.56 decades everywhere and only reflects χ²₂ sampling noise. **`phi_chi_LS_fit*.pkl`
     files made before the bias correction are biased low** and must be regenerated with
     `force_overwrite=True`.
-  - `estimate_F_phi_chi` tapers each depth record with a periodic Hann window scaled to unit mean square
-    (`_hann_window`) after the mean removal and the zero-fill of elements 4, 5, 20 (`hann=False` gives the
-    old untapered periodogram). Untapered, the very red phase spectrum leaks into every bin and sets a
+  - `estimate_F_phi_chi` tapers each depth record with a periodic window scaled to unit mean square
+    (`_taper_window`) after the mean removal and the zero-fill of elements 4, 5, 20. `window` is one of
+    `SPECTRAL_WINDOWS`: `"hann"` (default), `"tukey"` (α = `TUKEY_ALPHA` = 0.3, fixed: flat over the
+    middle 70%, so it down-weights the array ends less than Hann but leaks more) or `"rectangular"` (the
+    old untapered periodogram). Before 2026-11-02 this was a boolean `hann`. Untapered, the very red phase spectrum leaks into every bin and sets a
     floor near 1–3 rad² m that hides the spectrum at high wavenumbers. The taper keeps white-noise levels
     (`tests/test_tools.py`), but down-weights variance at scales longer than the array, which sits at the
     array ends, so total power drops (to about 45–70% for ducted φ). The fit still compares against the
     analytic model, not the model passed through the same taper; that was a deliberate choice, because with
     the taper the two differ little in the resolved bins. Fits made before 2026-10-23 used the untapered
     spectra.
-  - `estimate_F_phi_chi(first_difference=True)` prewhitens: mean removal → first difference → (Hann, if
-    `hann`) → periodogram → postcolor ÷ (2 sin πmΔz)², the order of `estimation.Estimator(prewhiten=True)`
+  - `estimate_F_phi_chi(first_difference=True)` prewhitens: mean removal → first difference → taper
+    (`window`) → periodogram → postcolor ÷ (2 sin πmΔz)², the order of `estimation.Estimator(prewhiten=True)`
     and `analysis/spectral_estimation_methods/` (`test_first_difference_matches_prewhitened_estimator`). The
     differenced record has 27 samples, so `m_data` is 13 bins at k/243 m with no Nyquist bin. With
     differencing, phase elements 4, 5, 20 are **linearly interpolated** instead of zero-filled (a zero
     in a red record differences to two big steps that postcoloring pushes into the lowest bins); the
-    undifferenced methods still zero-fill. The four methods (rectangular, Hann, first difference
-    ± Hann) are selected by `hann` × `first_difference` in the CLI fit / GM-levels / independence-test
-    entries (asked; `run_all_processing` uses the default Hann, no differencing) and in the publication
-    config. `phi_chi_LS_fit_path(..., hann, first_difference)` adds `_first_difference` and/or
-    `_rectangular`; the default keeps the old names.
+    undifferenced methods still zero-fill. The six methods are selected by `window` × `first_difference`
+    in the CLI fit / GM-levels / independence-test entries (asked, "Taper window?" is a select;
+    `run_all_processing` uses the default Hann, no differencing) and in the publication config.
+    `phi_chi_LS_fit_path(..., window, first_difference)` adds `_first_difference` and/or
+    `_rectangular` / `_tukey`; the default keeps the old names.
   - `compute_F_phi_chi` (Colosi 2016 Eq. 6.52) takes m in rad/m but returns a one-sided density **per
     cycle/m**: Eq. 6.52 is a density per rad/m, so it is multiplied by the 2π Jacobian to match the 9 m
     periodograms of `estimate_F_phi_chi` and Colosi's per-cpm figures. `phi_chi_spectrum_model`,
@@ -183,7 +185,8 @@ uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dash
     The notebooks still use `remove_array_tilt=False` and `phi_chi_LS_fit.pkl`.
   - The config's `remove_pattern` (`none` default, `phase`, `magnitude`, `both`) picks the
     pattern-removed variants of the same files (`tools.wavefront_values_path`).
-  - The config's `hann` (default `true`) and `first_difference` (default `false`) pick the spectral
+  - The config's `window` (`hann` default, `tukey`, `rectangular`) and `first_difference` (default `false`)
+    pick the spectral
     estimation method of `F_phi_chi_ducted`, and with `spectra_model: fit` the matching fit file.
   - The config's `spectra_model` picks the `F_phi_chi_ducted` model curves: `fit` (default, the notebook) draws
     the least-squares GM level with model + noise dashed and the fit text box; `gm_levels` draws 1× GM (solid)

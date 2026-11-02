@@ -145,7 +145,7 @@ class PublicationFiguresConfig:
     seed: int = 0
     remove_array_tilt: bool = True
     remove_pattern: str = "none"
-    hann: bool = True
+    window: str = "hann"
     first_difference: bool = False
     spectra_model: str = "fit"
     gm_levels: tuple[float, ...] = (1.0, 2.0)
@@ -172,7 +172,7 @@ class PublicationFiguresConfig:
                 "seed",
                 "remove_array_tilt",
                 "remove_pattern",
-                "hann",
+                "window",
                 "first_difference",
                 "spectra_model",
                 "gm_levels",
@@ -229,9 +229,12 @@ class PublicationFiguresConfig:
             )
             raise ConfigError(msg)
 
-        hann = data.get("hann", True)
-        if not isinstance(hann, bool):
-            msg = f"{path}.hann: expected true or false, got {hann!r}"
+        window = data.get("window", "hann")
+        if window not in tools.SPECTRAL_WINDOWS:
+            msg = (
+                f"{path}.window: expected one of {list(tools.SPECTRAL_WINDOWS)}, "
+                f"got {window!r}"
+            )
             raise ConfigError(msg)
 
         first_difference = data.get("first_difference", False)
@@ -269,7 +272,7 @@ class PublicationFiguresConfig:
             seed=seed,
             remove_array_tilt=remove_array_tilt,
             remove_pattern=remove_pattern,
-            hann=hann,
+            window=window,
             first_difference=first_difference,
             spectra_model=spectra_model,
             gm_levels=tuple(float(gm) for gm in gm_levels),
@@ -1521,7 +1524,7 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
 
     The observed spectra are the bias-corrected log-means of the per-transmission periodograms, and the
     shaded bands are ± their leave-one-transmission-out jackknife standard error
-    (`tools.estimate_F_phi_chi`), with the spectral estimation method of ``cfg.hann`` and
+    (`tools.estimate_F_phi_chi`), with the spectral estimation method of ``cfg.window`` and
     ``cfg.first_difference``. The fit read with ``spectra_model: fit`` is the one made with the same method
     (`tools.phi_chi_LS_fit_path`).
 
@@ -1552,7 +1555,7 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
         tools.estimate_F_phi_chi(
             remove_array_tilt=cfg.remove_array_tilt,
             remove_pattern=cfg.remove_pattern,
-            hann=cfg.hann,
+            window=cfg.window,
             first_difference=cfg.first_difference,
         )
     )
@@ -1565,7 +1568,7 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
             tools.phi_chi_LS_fit_path(
                 cfg.remove_array_tilt,
                 cfg.remove_pattern,
-                cfg.hann,
+                cfg.window,
                 cfg.first_difference,
             ).name,
             "ɸ χ GM least squares fit",
