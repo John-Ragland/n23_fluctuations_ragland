@@ -48,6 +48,46 @@ def test_default_estimator_matches_estimate_F_phi_chi(tmp_path, monkeypatch):
         np.testing.assert_allclose(e.chi_ls, F_chi_ls[ray_id], rtol=1e-10)
 
 
+@pytest.mark.parametrize("hann", [True, False])
+@pytest.mark.parametrize("remove_pattern", ["none", "phase"])
+def test_first_difference_matches_prewhitened_estimator(
+    tmp_path, monkeypatch, hann, remove_pattern
+):
+    """`tools.estimate_F_phi_chi(first_difference=True)` is the prewhitened `Estimator`: first difference, then
+    the taper, then postcoloring, with the bad elements 4, 5, 20 linearly interpolated in phase (or kept when
+    the phase pattern was removed)."""
+    wavefronts = _random_wavefronts(np.random.default_rng(3))
+    path = tmp_path / "wavefront_values_tilt_removed.pkl"
+    with path.open("wb") as f:
+        pickle.dump(wavefronts, f)
+    monkeypatch.setattr(
+        tools,
+        "wavefront_values_path",
+        lambda remove_array_tilt, remove_pattern="none": path,
+    )
+
+    m, _, _, F_phi_lm, F_phi_ls, F_chi_lm, F_chi_ls = tools.estimate_F_phi_chi(
+        remove_array_tilt=True,
+        hann=hann,
+        remove_pattern=remove_pattern,
+        first_difference=True,
+    )
+    assert len(m) == 13  # 27 differenced samples
+    est = estimation.Estimator(
+        prewhiten=True,
+        window="hann" if hann else "rectangular",
+        bad_element_fill="linear",
+        bad_elements=() if remove_pattern == "phase" else (4, 5, 20),
+    )
+    estimates = estimation.estimate_spectra(wavefronts, est, tools.DUCTED_RAY_IDS)
+    for ray_id, e in estimates.items():
+        np.testing.assert_allclose(e.m, m)
+        np.testing.assert_allclose(e.phi_lm, F_phi_lm[ray_id], rtol=1e-10)
+        np.testing.assert_allclose(e.phi_ls, F_phi_ls[ray_id], rtol=1e-10)
+        np.testing.assert_allclose(e.chi_lm, F_chi_lm[ray_id], rtol=1e-10)
+        np.testing.assert_allclose(e.chi_ls, F_chi_ls[ray_id], rtol=1e-10)
+
+
 @pytest.mark.parametrize("window", estimation.WINDOWS)
 def test_tapered_spectra_white_noise_level(window):
     """Every taper keeps the one-sided density of white noise, 2 sigma^2 dz, in every bin."""

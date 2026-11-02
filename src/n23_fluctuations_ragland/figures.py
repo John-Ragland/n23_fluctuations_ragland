@@ -145,6 +145,8 @@ class PublicationFiguresConfig:
     seed: int = 0
     remove_array_tilt: bool = True
     remove_pattern: str = "none"
+    hann: bool = True
+    first_difference: bool = False
     spectra_model: str = "fit"
     gm_levels: tuple[float, ...] = (1.0, 2.0)
     map: MapConfig = field(default_factory=MapConfig)
@@ -170,6 +172,8 @@ class PublicationFiguresConfig:
                 "seed",
                 "remove_array_tilt",
                 "remove_pattern",
+                "hann",
+                "first_difference",
                 "spectra_model",
                 "gm_levels",
                 "map",
@@ -225,6 +229,16 @@ class PublicationFiguresConfig:
             )
             raise ConfigError(msg)
 
+        hann = data.get("hann", True)
+        if not isinstance(hann, bool):
+            msg = f"{path}.hann: expected true or false, got {hann!r}"
+            raise ConfigError(msg)
+
+        first_difference = data.get("first_difference", False)
+        if not isinstance(first_difference, bool):
+            msg = f"{path}.first_difference: expected true or false, got {first_difference!r}"
+            raise ConfigError(msg)
+
         spectra_model = data.get("spectra_model", "fit")
         if spectra_model not in SPECTRA_MODELS:
             msg = f"{path}.spectra_model: expected one of {list(SPECTRA_MODELS)}, got {spectra_model!r}"
@@ -255,6 +269,8 @@ class PublicationFiguresConfig:
             seed=seed,
             remove_array_tilt=remove_array_tilt,
             remove_pattern=remove_pattern,
+            hann=hann,
+            first_difference=first_difference,
             spectra_model=spectra_model,
             gm_levels=tuple(float(gm) for gm in gm_levels),
             map=MapConfig.from_mapping(data.get("map") or {}, f"{path}.map"),
@@ -1505,7 +1521,9 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
 
     The observed spectra are the bias-corrected log-means of the per-transmission periodograms, and the
     shaded bands are ± their leave-one-transmission-out jackknife standard error
-    (`tools.estimate_F_phi_chi`).
+    (`tools.estimate_F_phi_chi`), with the spectral estimation method of ``cfg.hann`` and
+    ``cfg.first_difference``. The fit read with ``spectra_model: fit`` is the one made with the same method
+    (`tools.phi_chi_LS_fit_path`).
 
     ``cfg.spectra_model`` picks the model curves. ``"fit"`` (the notebook) draws the least squares GM
     level with its noise levels, model + noise dashed. ``"gm_levels"`` draws the GM levels of
@@ -1532,7 +1550,10 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
     )
     m_data, _F_phi_data, _F_chi_data, F_phi_lm, F_phi_ls, F_chi_lm, F_chi_ls = (
         tools.estimate_F_phi_chi(
-            remove_array_tilt=cfg.remove_array_tilt, remove_pattern=cfg.remove_pattern
+            remove_array_tilt=cfg.remove_array_tilt,
+            remove_pattern=cfg.remove_pattern,
+            hann=cfg.hann,
+            first_difference=cfg.first_difference,
         )
     )
 
@@ -1541,7 +1562,12 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
     if not fixed_gm:
         # open ls parameters for spectra + noise model
         results = _load_pickle(
-            tools.phi_chi_LS_fit_path(cfg.remove_array_tilt, cfg.remove_pattern).name,
+            tools.phi_chi_LS_fit_path(
+                cfg.remove_array_tilt,
+                cfg.remove_pattern,
+                cfg.hann,
+                cfg.first_difference,
+            ).name,
             "ɸ χ GM least squares fit",
         )
 

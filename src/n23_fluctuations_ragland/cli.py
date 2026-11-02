@@ -166,12 +166,22 @@ def run_all_processing():
         (
             "Step 9: ɸ χ GM least squares fit",
             phi_chi_LS_fit,
-            {"remove_array_tilt": False, "remove_pattern": "none"},
+            {
+                "remove_array_tilt": False,
+                "remove_pattern": "none",
+                "hann": True,
+                "first_difference": False,
+            },
         ),
         (
             "Step 10: ɸ χ GM least squares fit (array tilt removed)",
             phi_chi_LS_fit,
-            {"remove_array_tilt": True, "remove_pattern": "none"},
+            {
+                "remove_array_tilt": True,
+                "remove_pattern": "none",
+                "hann": True,
+                "first_difference": False,
+            },
         ),
     ]
 
@@ -336,6 +346,17 @@ def _ask_remove_pattern():
         choices=list(tools.REMOVE_PATTERN_CHOICES),
         default="none",
     ).ask()
+
+
+def _ask_spectral_method(hann=None, first_difference=None):
+    """Ask for the spectral estimation method of `tools.estimate_F_phi_chi`, for the choices that are None."""
+    if hann is None:
+        hann = questionary.confirm("Hann window?", default=True).ask()
+    if first_difference is None:
+        first_difference = questionary.confirm(
+            "First difference + postcolor?", default=False
+        ).ask()
+    return hann, first_difference
 
 
 def _wavefront_values_path(remove_array_tilt, remove_pattern="none"):
@@ -636,39 +657,58 @@ def compute_mean_pulse():
     )
 
 
-def phi_chi_LS_fit(remove_array_tilt=None, remove_pattern=None, force_overwrite=False):
+def phi_chi_LS_fit(
+    remove_array_tilt=None,
+    remove_pattern=None,
+    hann=None,
+    first_difference=None,
+    force_overwrite=False,
+):
     """
     Fit the GM energy and observational noise levels to the observed ɸ and χ spectra.
 
     The spectra are estimated from ``wavefront_values_tilt_removed.pkl`` with the array tilt removed
     and the fit is written to ``phi_chi_LS_fit_tilt_removed.pkl``, otherwise from
     ``wavefront_values.pkl`` to ``phi_chi_LS_fit.pkl``. A removed hydrophone pattern adds the same
-    suffix to both (`tools.wavefront_values_path`). The user is asked whether to remove the tilt and
-    the pattern when `remove_array_tilt` and `remove_pattern` are None.
+    suffix to both (`tools.wavefront_values_path`). The spectral estimation method (`hann`,
+    `first_difference`, see `tools.estimate_F_phi_chi`) adds its own suffix to the fit unless it is the
+    default Hann window without first differencing (`tools.phi_chi_LS_fit_path`). The user is asked for
+    each of these choices that is None.
     """
     if remove_array_tilt is None:
         remove_array_tilt = _ask_remove_array_tilt()
     if remove_pattern is None:
         remove_pattern = _ask_remove_pattern()
+    hann, first_difference = _ask_spectral_method(hann, first_difference)
     _compute_phi_chi_LS_fit(
         remove_array_tilt=remove_array_tilt,
         remove_pattern=remove_pattern,
+        hann=hann,
+        first_difference=first_difference,
         force_overwrite=force_overwrite,
     )
 
 
 @check_output_exists(
-    lambda remove_array_tilt, remove_pattern: tools.phi_chi_LS_fit_path(
-        remove_array_tilt, remove_pattern
+    lambda remove_array_tilt, remove_pattern, hann, first_difference: (
+        tools.phi_chi_LS_fit_path(
+            remove_array_tilt, remove_pattern, hann, first_difference
+        )
     )
 )
-def _compute_phi_chi_LS_fit(remove_array_tilt, remove_pattern):
+def _compute_phi_chi_LS_fit(remove_array_tilt, remove_pattern, hann, first_difference):
     m_data, _, _, F_phi_lm, F_phi_ls, F_chi_lm, F_chi_ls = tools.estimate_F_phi_chi(
-        remove_array_tilt=remove_array_tilt, remove_pattern=remove_pattern
+        remove_array_tilt=remove_array_tilt,
+        remove_pattern=remove_pattern,
+        hann=hann,
+        first_difference=first_difference,
     )
     results = tools.fit_F_phi_chis(m_data, F_phi_lm, F_chi_lm, F_phi_ls, F_chi_ls)
 
-    with tools.phi_chi_LS_fit_path(remove_array_tilt, remove_pattern).open("wb") as f:
+    path = tools.phi_chi_LS_fit_path(
+        remove_array_tilt, remove_pattern, hann, first_difference
+    )
+    with path.open("wb") as f:
         pickle.dump(results, f)
 
 
@@ -703,7 +743,9 @@ def coherence_lengths(remove_array_tilt=None, remove_pattern=None):
     return table
 
 
-def gm_levels(remove_array_tilt=None, remove_pattern=None):
+def gm_levels(
+    remove_array_tilt=None, remove_pattern=None, hann=None, first_difference=None
+):
     """
     Print a LaTeX table of the GM energy levels fitted to the observed ɸ and χ spectra (WFT) and to the
     vertical coherence (path integral), ± their jackknife standard errors.
@@ -714,23 +756,30 @@ def gm_levels(remove_array_tilt=None, remove_pattern=None):
     (`tools.fit_GM_vertical_coherence`), to D = -2 ln VC of the same wavefront values.
 
     The user is asked whether to use the wavefront values with the array tilt and the hydrophone pattern
-    removed when `remove_array_tilt` and `remove_pattern` are None.
+    removed, and for the spectral estimation method of the fit (`hann`, `first_difference`), for each of
+    these choices that is None.
     """
     if remove_array_tilt is None:
         remove_array_tilt = _ask_remove_array_tilt()
     if remove_pattern is None:
         remove_pattern = _ask_remove_pattern()
+    hann, first_difference = _ask_spectral_method(hann, first_difference)
 
     wavefront_values = _load_wavefront_values(remove_array_tilt, remove_pattern)
 
-    path = tools.phi_chi_LS_fit_path(remove_array_tilt, remove_pattern)
+    path = tools.phi_chi_LS_fit_path(
+        remove_array_tilt, remove_pattern, hann, first_difference
+    )
     if path.exists():
         with path.open("rb") as f:
             results = pickle.load(f)
         print("Jackknifing the ɸ χ GM fit...")
         m_data, F_phi_data, F_chi_data, _, F_phi_ls, _, F_chi_ls = (
             tools.estimate_F_phi_chi(
-                remove_array_tilt=remove_array_tilt, remove_pattern=remove_pattern
+                remove_array_tilt=remove_array_tilt,
+                remove_pattern=remove_pattern,
+                hann=hann,
+                first_difference=first_difference,
             )
         )
         spectral = tools.jackknife_F_phi_chi_fit(
@@ -769,25 +818,32 @@ def _load_wavefront_values(remove_array_tilt, remove_pattern="none"):
         return pickle.load(f)
 
 
-def independence_test(remove_array_tilt=None, remove_pattern=None):
+def independence_test(
+    remove_array_tilt=None, remove_pattern=None, hann=None, first_difference=None
+):
     """
     Print the transmission independence test (lag-1 autocorrelation of the per-transmission estimates over the
     hourly transmissions) for the ɸ and χ spectra and for the vertical coherence, the assumption of their
     jackknife error bars.
 
     The user is asked whether to use the wavefront values with the array tilt and the hydrophone pattern
-    removed when `remove_array_tilt` and `remove_pattern` are None.
+    removed, and for the spectral estimation method of the spectra (`hann`, `first_difference`), for each of
+    these choices that is None.
     """
     if remove_array_tilt is None:
         remove_array_tilt = _ask_remove_array_tilt()
     if remove_pattern is None:
         remove_pattern = _ask_remove_pattern()
+    hann, first_difference = _ask_spectral_method(hann, first_difference)
 
     wavefront_values = _load_wavefront_values(remove_array_tilt, remove_pattern)
 
     print("Testing the ɸ and χ spectra...")
     F_results = tools.independence_test_F_phi_chi(
-        remove_array_tilt=remove_array_tilt, remove_pattern=remove_pattern
+        remove_array_tilt=remove_array_tilt,
+        remove_pattern=remove_pattern,
+        hann=hann,
+        first_difference=first_difference,
     )
     print("Testing the vertical coherence...")
     vc_result = tools.independence_test_vertical_coherence(wavefront_values)

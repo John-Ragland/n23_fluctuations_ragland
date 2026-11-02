@@ -101,6 +101,22 @@ def test_remove_pattern_config(tmp_path):
         figures.load_config(path)
 
 
+def test_spectral_method_config(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("{}\n")
+    cfg = figures.load_config(path)
+    assert cfg.hann is True
+    assert cfg.first_difference is False
+    path.write_text("hann: false\nfirst_difference: true\n")
+    cfg = figures.load_config(path)
+    assert cfg.hann is False
+    assert cfg.first_difference is True
+    for bad in ("hann: 1\n", "first_difference: yes please\n"):
+        path.write_text(bad)
+        with pytest.raises(figures.ConfigError, match=r"hann|first_difference"):
+            figures.load_config(path)
+
+
 def test_missing_config_says_how_to_make_one(tmp_path):
     with pytest.raises(FileNotFoundError, match="create publication figures config"):
         figures.load_config(tmp_path / "config.yaml")

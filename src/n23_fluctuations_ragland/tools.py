@@ -229,10 +229,21 @@ def wavefront_values_path(remove_array_tilt, remove_pattern="none"):
     return get_data_dir() / "dataproducts" / fn
 
 
-def phi_chi_LS_fit_path(remove_array_tilt, remove_pattern="none"):
+def _spectral_method_suffix(hann=True, first_difference=False):
+    """File-name suffix of a spectral estimation method of `estimate_F_phi_chi`. The default (Hann, no first
+    difference) has none, so its products keep their old names."""
+    return ("_first_difference" if first_difference else "") + (
+        "" if hann else "_rectangular"
+    )
+
+
+def phi_chi_LS_fit_path(
+    remove_array_tilt, remove_pattern="none", hann=True, first_difference=False
+):
     """
-    Path of the cached ɸ χ GM least squares fit, ``dataproducts/phi_chi_LS_fit[_tilt_removed][...].pkl``,
-    with the suffixes of `wavefront_values_path`.
+    Path of the cached ɸ χ GM least squares fit,
+    ``dataproducts/phi_chi_LS_fit[_tilt_removed][...][_first_difference][_rectangular].pkl``, with the
+    suffixes of `wavefront_values_path` and then of the spectral estimation method.
 
     Parameters
     ----------
@@ -240,8 +251,15 @@ def phi_chi_LS_fit_path(remove_array_tilt, remove_pattern="none"):
         If True, the path of the fit to the wavefront values with the array tilt removed.
     remove_pattern : str
         hydrophone pattern removed before beamforming, one of `REMOVE_PATTERN_CHOICES`. Default is ``"none"``.
+    hann : bool
+        spectra tapered with a Hann window (default, no suffix); False adds ``_rectangular``
+    first_difference : bool
+        spectra estimated by first differencing and postcoloring; True adds ``_first_difference``
     """
-    fn = f"phi_chi_LS_fit{_product_suffix(remove_array_tilt, remove_pattern)}.pkl"
+    fn = (
+        f"phi_chi_LS_fit{_product_suffix(remove_array_tilt, remove_pattern)}"
+        f"{_spectral_method_suffix(hann, first_difference)}.pkl"
+    )
     return get_data_dir() / "dataproducts" / fn
 
 
@@ -1557,10 +1575,10 @@ def compute_F_phi_chi(
     Returns
     -------
     F_phi : np.array
-        array of one-sided phase power spectral density per cycle/m, $F_\\phi$ [rad$^2$ m], at each vertical
+        array of one-sided phase power spectral density per cycle/m, $F_\\phi$ [1/cpm], at each vertical
         wavenumber in m. NaN outside the band.
     F_chi : np.array
-        array of one-sided log-amplitude power spectral density per cycle/m, $F_\\chi$ [m], at each vertical
+        array of one-sided log-amplitude power spectral density per cycle/m, $F_\\chi$ [1/cpm], at each vertical
         wavenumber in m. NaN outside the band.
     """
 
@@ -3123,8 +3141,31 @@ def _hann_window(n: int):
     return window / np.sqrt(np.mean(window**2))
 
 
+def _interpolate_nan_columns(x):
+    """Replace the NaN columns of `x` (n_records, n_samples) by linear interpolation along axis 1 between the
+    finite columns (constant past the ends)."""
+    x = x.copy()
+    nan = np.any(np.isnan(x), axis=0)
+    if nan.any():
+        z = np.arange(x.shape[1])
+        for row in x:
+            row[nan] = np.interp(z[nan], z[~nan], row[~nan])
+    return x
+
+
+def _first_difference_postcolor(m, dz: float = 9):
+    r"""
+    Postcoloring factor of a first difference, $1 / |2 \sin(\pi m \Delta z)|^2$, that turns the spectrum of a
+    first-differenced record back into the spectrum of the record, at wavenumbers `m` [cycles/m].
+    """
+    return 1 / (2 * np.sin(np.pi * m * dz)) ** 2
+
+
 def estimate_F_phi_chi(
-    remove_array_tilt: bool = False, hann: bool = True, remove_pattern: str = "none"
+    remove_array_tilt: bool = False,
+    hann: bool = True,
+    remove_pattern: str = "none",
+    first_difference: bool = False,
 ):
     r"""
     Estimate observed $F_{\phi}$ and $F_{\chi}$ for the acoustic receptions.
@@ -3139,9 +3180,19 @@ def estimate_F_phi_chi(
     variance at scales longer than the array, which shows up as a slope or curvature concentrated at the array
     ends, is down-weighted.
 
-    Elements 4, 5 and 20 carry a constant phase offset, so they are zero-filled in phase, unless the phase of
+    With `first_difference`, each record is first-differenced along the array (prewhitened) before the
+    optional taper, and the periodogram is postcolored by $1 / |2 \sin(\pi m \Delta z)|^2$
+    (`_first_difference_postcolor`). The order is mean removal, first difference, Hann window, periodogram,
+    postcoloring, as in `estimation.Estimator` (``prewhiten``) and ``analysis/spectral_estimation_methods``.
+    The differenced record is one element shorter (27 of 28), so its wavenumbers are k / (27 x 9 m), with no
+    Nyquist bin. The four combinations are rectangular, Hann, first difference + rectangular and first
+    difference + Hann.
+
+    Elements 4, 5 and 20 carry a constant phase offset, so they are dropped from the phase, unless the phase of
     the hydrophone pattern was removed (`remove_pattern` ``"phase"`` or ``"both"``), which corrects them, and all
-    28 elements are used.
+    28 elements are used. Without first differencing they are zero-filled after the mean removal. With it they
+    are filled by linear interpolation along the array, because a zero inside a red record differences to two
+    large steps that postcoloring would put into the lowest bins.
 
     Parameters
     ----------
@@ -3152,6 +3203,9 @@ def estimate_F_phi_chi(
     remove_pattern : str
         hydrophone pattern removed from the wavefront values used (`wavefront_values_path`), one of
         `REMOVE_PATTERN_CHOICES`. Default is ``"none"``.
+    first_difference : bool
+        If True, first-difference each record before the taper and postcolor the periodogram. Default is False.
+
     Returns
     -------
     m_data : np.array
@@ -3197,9 +3251,17 @@ def estimate_F_phi_chi(
         if not phase_removed:
             phase[np.s_[:, np.r_[4:6, 20]]] = np.nan
         phase = phase - np.nanmean(phase, axis=1)[:, None]
-        phase[np.isnan(phase)] = 0
+        if first_difference:
+            phase = _interpolate_nan_columns(phase)
+        else:
+            phase[np.isnan(phase)] = 0
 
         lamp = lamp - np.mean(lamp, axis=1)[:, None]
+
+        # prewhiten
+        if first_difference:
+            phase = np.diff(phase, axis=1)
+            lamp = np.diff(lamp, axis=1)
 
         # taper in depth
         if hann:
@@ -3211,6 +3273,15 @@ def estimate_F_phi_chi(
         # F_phi_data [rad^2 m], F_chi_data [m], one-sided per cycle/m
         _, F_phi_data[ray_id], dof = _one_sided_periodogram(phase, fs=1 / 9)
         m_data, F_chi_data[ray_id], dof = _one_sided_periodogram(lamp, fs=1 / 9)
+
+        # postcolor
+        if first_difference:
+            F_phi_data[ray_id] = F_phi_data[ray_id] * _first_difference_postcolor(
+                m_data
+            )
+            F_chi_data[ray_id] = F_chi_data[ray_id] * _first_difference_postcolor(
+                m_data
+            )
 
         # bias-corrected log-mean and its jackknife standard error
         F_chi_lm[ray_id], F_chi_ls[ray_id] = _jackknife_log_mean(
@@ -3298,7 +3369,11 @@ def _independence_test_per_ray(samples_per_ray: dict, **kwargs):
 
 
 def independence_test_F_phi_chi(
-    remove_array_tilt: bool = False, remove_pattern: str = "none", **kwargs
+    remove_array_tilt: bool = False,
+    remove_pattern: str = "none",
+    hann: bool = True,
+    first_difference: bool = False,
+    **kwargs,
 ):
     """
     `transmission_independence_test` of the per-transmission log-periodograms, log10 F_phi and log10 F_chi
@@ -3310,6 +3385,8 @@ def independence_test_F_phi_chi(
         If True, wavefront values with array tilt removed are used.
     remove_pattern : str
         hydrophone pattern removed from the wavefront values used, one of `REMOVE_PATTERN_CHOICES`
+    hann, first_difference : bool
+        spectral estimation method, see `estimate_F_phi_chi`
     **kwargs
         passed to `transmission_independence_test`
 
@@ -3320,7 +3397,10 @@ def independence_test_F_phi_chi(
         all ducted rays, and the mean r1 of each ray ("per_ray")
     """
     _, F_phi_data, F_chi_data, _, _, _, _ = estimate_F_phi_chi(
-        remove_array_tilt=remove_array_tilt, remove_pattern=remove_pattern
+        remove_array_tilt=remove_array_tilt,
+        remove_pattern=remove_pattern,
+        hann=hann,
+        first_difference=first_difference,
     )
     return {
         name: _independence_test_per_ray(

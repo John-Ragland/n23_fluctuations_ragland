@@ -48,6 +48,16 @@ remove_array_tilt: true
 # With the phase removed, F_phi_chi_ducted uses all 28 elements instead of zero-filling 4, 5 and 20.
 remove_pattern: none
 
+# Spectral estimation method of the observed spectra in F_phi_chi_ducted (tools.estimate_F_phi_chi).
+# hann: taper each depth record with a Hann window (false = rectangular, untapered).
+# first_difference: first-difference each record along the array before the taper and postcolor the
+# periodogram by 1/|2 sin(pi m dz)|^2 (the record is then 27 elements, so the wavenumbers shift
+# slightly). With spectra_model: fit, the fit must be made with the same choices ('ɸ χ GM least
+# squares fit'); every choice but the default (hann true, first_difference false) adds a suffix to
+# the fit file: _first_difference and/or _rectangular (e.g. phi_chi_LS_fit_tilt_removed_first_difference.pkl).
+hann: true
+first_difference: false
+
 # Model curves of F_phi_chi_ducted. fit = the least squares GM level and noise levels
 # (phi_chi_LS_fit*.pkl). gm_levels = 1x GM (solid) and 2x GM (dashed) without noise, like
 # Ducted_VC; it needs no fit. Both use the same output name, F_phi_chi_ducted.
