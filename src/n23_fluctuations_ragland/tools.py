@@ -3173,6 +3173,48 @@ def _jackknife_log_mean(F, dof):
     return lm, 10 ** np.sqrt(_jackknife_var(mean_jk))
 
 
+def _jackknife_linear_mean(F):
+    r"""
+    Arithmetic mean of periodograms over transmissions, with the jackknife standard error of its log10.
+
+    The mean of periodograms is an unbiased estimate of the expected periodogram, whatever the distribution
+    of each bin, and when the spectrum varies between transmissions it is the mean spectrum, not the
+    geometric mean that the log-mean (`_jackknife_log_mean`) estimates. The standard error is the
+    leave-one-transmission-out jackknife (Efron & Tibshirani 1993, Ch. 11) of log10 of the mean.
+
+    Parameters
+    ----------
+    F : np.array
+        periodograms, shape (n_transmissions, n_wavenumbers)
+
+    Returns
+    -------
+    lm : np.array
+        mean of the periodograms, shape (n_wavenumbers,)
+    ls : np.array
+        jackknife standard error of log10(lm) as a multiplicative factor, 10 ** sigma_jk,
+        shape (n_wavenumbers,)
+    """
+    M = F.shape[0]
+    # leave out one transmission at a time
+    mean_jk = np.stack([np.mean(np.delete(F, j, axis=0), axis=0) for j in range(M)])
+    return np.mean(F, axis=0), 10 ** np.sqrt(_jackknife_var(np.log10(mean_jk)))
+
+
+SPECTRUM_AVERAGES = ("mean", "log_mean")
+
+
+def _average_periodograms(F, dof, average: str):
+    """Average of periodograms over transmissions: ``mean`` (`_jackknife_linear_mean`) or ``log_mean``
+    (`_jackknife_log_mean`)."""
+    if average == "mean":
+        return _jackknife_linear_mean(F)
+    if average == "log_mean":
+        return _jackknife_log_mean(F, dof)
+    msg = f"average must be one of {SPECTRUM_AVERAGES}, got {average!r}"
+    raise ValueError(msg)
+
+
 def _taper_window(n: int, window: str = "hann"):
     """
     Periodic taper of length `n`, one of `SPECTRAL_WINDOWS`, scaled to unit mean square so that it leaves the
@@ -3219,13 +3261,18 @@ def estimate_F_phi_chi(
     window: str = "hann",
     remove_pattern: str = "none",
     first_difference: bool = False,
+    average: str = "mean",
 ):
     r"""
     Estimate observed $F_{\phi}$ and $F_{\chi}$ for the acoustic receptions.
 
-    Periodograms are computed for each of the receptions and the periodograms are averaged together in the log
-    domain, with the bias of the log-mean removed (`_jackknife_log_mean`). The uncertainty of the mean is the
-    leave-one-transmission-out jackknife standard error.
+    Periodograms are computed for each of the receptions and averaged over transmissions. By default
+    (``average="mean"``) the average is the arithmetic mean (`_jackknife_linear_mean`). With
+    ``average="log_mean"`` it is the log-mean with its $\chi^2_\nu$ bias removed (`_jackknife_log_mean`),
+    which estimates the geometric mean over transmissions. That is lower than the mean when the spectrum varies
+    between transmissions, and it is exactly bias-corrected only where every bin is $\chi^2_\nu$ (not at the
+    record's lowest and highest bins, nor for the untapered red phase spectrum). The uncertainty of either is
+    the leave-one-transmission-out jackknife standard error of its log10.
 
     Each depth record has its mean removed and is tapered (`_taper_window`) before the periodogram, by default
     with a Hann window. Without the taper the very red phase spectrum leaks into every bin and sets a floor that
@@ -3260,6 +3307,9 @@ def estimate_F_phi_chi(
         `REMOVE_PATTERN_CHOICES`. Default is ``"none"``.
     first_difference : bool
         If True, first-difference each record before the taper and postcolor the periodogram. Default is False.
+    average : str
+        average of the periodograms over transmissions, one of `SPECTRUM_AVERAGES`: ``"mean"`` (default) or
+        ``"log_mean"``
 
     Returns
     -------
@@ -3270,16 +3320,17 @@ def estimate_F_phi_chi(
     F_chi_data : dict
         dictionary containing arrays of log-amplitude power spectral density, $F_\\chi$ [m], one-sided per cycle/m
     F_phi_lm : dict
-        dictionary containing arrays of bias-corrected log-mean phase power spectral density, $F_\\phi$ [rad$^2$ m], one-sided per cycle/m
+        dictionary containing arrays of the average (`average`) over transmissions of the phase power spectral
+        density, $F_\\phi$ [rad$^2$ m], one-sided per cycle/m
     F_phi_ls : dict
-        dictionary containing arrays of the jackknife standard error of the log-mean phase power spectral
-        density, $F_\\phi$, as a multiplicative factor
+        dictionary containing arrays of the jackknife standard error of log10 of `F_phi_lm`, as a
+        multiplicative factor
     F_chi_lm : dict
-        dictionary containing arrays of bias-corrected log-mean log-amplitude power spectral density,
-        $F_\\chi$ [m], one-sided per cycle/m
+        dictionary containing arrays of the average (`average`) over transmissions of the log-amplitude power
+        spectral density, $F_\\chi$ [m], one-sided per cycle/m
     F_chi_ls : dict
-        dictionary containing arrays of the jackknife standard error of the log-mean log-amplitude power
-        spectral density, $F_\\chi$, as a multiplicative factor
+        dictionary containing arrays of the jackknife standard error of log10 of `F_chi_lm`, as a
+        multiplicative factor
     """
 
     _check_spectral_window(window)
@@ -3339,12 +3390,12 @@ def estimate_F_phi_chi(
                 m_data
             )
 
-        # bias-corrected log-mean and its jackknife standard error
-        F_chi_lm[ray_id], F_chi_ls[ray_id] = _jackknife_log_mean(
-            F_chi_data[ray_id], dof
+        # average over transmissions and its jackknife standard error
+        F_chi_lm[ray_id], F_chi_ls[ray_id] = _average_periodograms(
+            F_chi_data[ray_id], dof, average
         )
-        F_phi_lm[ray_id], F_phi_ls[ray_id] = _jackknife_log_mean(
-            F_phi_data[ray_id], dof
+        F_phi_lm[ray_id], F_phi_ls[ray_id] = _average_periodograms(
+            F_phi_data[ray_id], dof, average
         )
 
     return m_data, F_phi_data, F_chi_data, F_phi_lm, F_phi_ls, F_chi_lm, F_chi_ls

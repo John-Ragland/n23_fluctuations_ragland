@@ -819,6 +819,49 @@ def test_jackknife_log_mean_is_unbiased_for_white_noise():
     )
 
 
+def test_jackknife_linear_mean_is_unbiased_for_white_noise():
+    """The arithmetic mean of periodograms recovers a white spectrum in every bin, and its jackknife SE of
+    log10 is the delta-method SE, std(F) / (sqrt(M) mean(F) ln 10)."""
+    import numpy as np
+
+    from n23_fluctuations_ragland import tools
+
+    rng = np.random.default_rng(0)
+    M, N, sigma, fs = 23, 28, 2.0, 1 / 9
+    true_level = 2 * sigma**2 / fs  # one-sided PSD of white noise
+
+    lms, ratios = [], []
+    for _ in range(400):
+        x = sigma * rng.standard_normal((M, N))
+        _, F, dof = tools._one_sided_periodogram(x, fs)
+        lm, ls = tools._jackknife_linear_mean(F)
+        np.testing.assert_array_equal(lm, np.mean(F, axis=0))
+        lms.append(lm)
+        # log10 is nonlinear, so a single outlying transmission pulls the jackknife away from the delta method
+        delta = np.std(F, axis=0, ddof=1) / (
+            np.sqrt(M) * np.mean(F, axis=0) * np.log(10)
+        )
+        ratios.append(np.log10(ls) / delta)
+        # dispatch
+        np.testing.assert_array_equal(
+            tools._average_periodograms(F, dof, "mean")[0], lm
+        )
+
+    # unbiased in linear space, including the 1-dof Nyquist bin
+    np.testing.assert_allclose(np.mean(lms, axis=0) / true_level, 1, atol=0.05)
+    np.testing.assert_allclose(np.median(ratios), 1, atol=0.05)
+
+
+def test_average_periodograms_rejects_unknown_average():
+    import numpy as np
+    import pytest
+
+    from n23_fluctuations_ragland import tools
+
+    with pytest.raises(ValueError, match="average"):
+        tools._average_periodograms(np.ones((3, 4)), np.full(4, 2.0), "median")
+
+
 def test_transmission_independence_test():
     """Uncorrelated rows sit at the null; strongly autocorrelated rows are detected."""
     import numpy as np

@@ -24,7 +24,7 @@ def _random_wavefronts(rng, n_tx=23, n=28, ray_ids=tools.DUCTED_RAY_IDS):
 @pytest.mark.parametrize("window", tools.SPECTRAL_WINDOWS)
 def test_default_estimator_matches_estimate_F_phi_chi(tmp_path, monkeypatch, window):
     """The default `Estimator` is `tools.estimate_F_phi_chi` (Hann taper, mean removed, bad elements
-    4, 5, 20 zero-filled in phase, bias-corrected log-mean), and so is each other taper."""
+    4, 5, 20 zero-filled in phase, arithmetic mean over transmissions), and so is each other taper."""
     wavefronts = _random_wavefronts(np.random.default_rng(1))
     path = tmp_path / "wavefront_values_tilt_removed.pkl"
     with path.open("wb") as f:

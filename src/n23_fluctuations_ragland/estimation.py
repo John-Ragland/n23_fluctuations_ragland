@@ -102,7 +102,7 @@ class Estimator:
     tukey_alpha: float = 0.5
     multitaper_nw: float = 2.0
     multitaper_k: int = 3
-    average: str = "log_mean"
+    average: str = "mean"
 
     def __post_init__(self):
         choices = {
@@ -382,13 +382,9 @@ def average_spectra(S: np.ndarray, dof: np.ndarray, how: str):
     """
     Average of per-transmission spectra over transmissions, with the leave-one-out jackknife standard
     error of its log10 as a multiplicative factor. ``log_mean`` is `tools._jackknife_log_mean`
-    (bias-corrected), ``mean`` the arithmetic mean.
+    (bias-corrected), ``mean`` the arithmetic mean (`tools._jackknife_linear_mean`).
     """
-    if how == "log_mean":
-        return tools._jackknife_log_mean(S, dof)
-    M = S.shape[0]
-    mean_jk = np.stack([np.mean(np.delete(S, j, axis=0), axis=0) for j in range(M)])
-    return np.mean(S, axis=0), 10 ** np.sqrt(tools._jackknife_var(np.log10(mean_jk)))
+    return tools._average_periodograms(S, dof, how)
 
 
 def _spectra_of(x: np.ndarray, est: Estimator):

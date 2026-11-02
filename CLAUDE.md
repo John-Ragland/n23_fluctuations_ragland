@@ -76,15 +76,21 @@ uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dash
     removed, and it sent the `Ducted_VC` (a) error bars to ±27. Other fits stopped short of the minimum.
     Rays whose MC[1] ≤ 0 (`-6b`, every product) can't be fitted, so the CLI coherence-lengths table fits
     only `DUCTED_RAY_IDS`.
-  - `estimate_F_phi_chi` returns `F_*_lm`, the log-mean of the per-transmission periodograms with its
-    bias removed (`_jackknife_log_mean`). A raw log-mean of χ²₂ bins is low by γ/ln10 = 0.251
-    decades (×0.56), and by 0.552 decades at the 1-dof Nyquist bin of the 28-phone record. It also
-    returns `F_*_ls`, the leave-one-transmission-out jackknife standard error of that mean (Efron &
+  - `estimate_F_phi_chi` returns `F_*_lm`, the average over transmissions of the per-transmission
+    periodograms. Since 2026-11-02 the default (`average="mean"`, `_jackknife_linear_mean`) is the
+    **arithmetic mean**. `average="log_mean"` gives the old log-mean with its χ²_ν bias removed
+    (`_jackknife_log_mean`; a raw log-mean of χ²₂ bins is low by γ/ln10 = 0.251 decades, 0.552 at the
+    1-dof Nyquist bin). The log-mean estimates the *geometric* mean over transmissions, and its correction
+    is exact only where every bin is χ²_ν around one common spectrum. On the real data the arithmetic mean
+    is higher, by 0.1–0.7 decades for χ (largest for `-7` with Hann) and by up to ~0.3 decades in the
+    low φ bins, because the spectrum varies between transmissions. `estimation.Estimator.average`
+    defaults to `"mean"` to match. It also
+    returns `F_*_ls`, the leave-one-transmission-out jackknife standard error of log10 of that mean (Efron &
     Tibshirani 1993, Ch. 11), as a multiplicative factor. The fit weights (`fit_F_phi_chis`) and the
     `F_phi_chi_ducted` bands both use it. The bands are the SE, not the single-periodogram spread,
     because the spread is ~0.56 decades everywhere and only reflects χ²₂ sampling noise. **`phi_chi_LS_fit*.pkl`
-    files made before the bias correction are biased low** and must be regenerated with
-    `force_overwrite=True`.
+    files made before the bias correction are biased low**, and files made before 2026-11-02 are fits to
+    the log-mean (the file names don't encode the average). Regenerate both with `force_overwrite=True`.
   - `estimate_F_phi_chi` tapers each depth record with a periodic window scaled to unit mean square
     (`_taper_window`) after the mean removal and the zero-fill of elements 4, 5, 20. `window` is one of
     `SPECTRAL_WINDOWS`: `"hann"` (default), `"tukey"` (α = `TUKEY_ALPHA` = 0.3, fixed: flat over the

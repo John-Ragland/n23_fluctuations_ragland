@@ -65,8 +65,9 @@ base:
   tukey_alpha: 0.5
   multitaper_nw: 2.0
   multitaper_k: 3
-  # log_mean (bias-corrected mean of log10 spectra) or mean (arithmetic)
-  average: log_mean
+  # mean (arithmetic) or log_mean (bias-corrected mean of log10 spectra, the geometric mean over
+  # transmissions; low when the spectrum varies between transmissions)
+  average: mean
 
 # Estimators to compare. Each entry overrides `base`; name is required and unique.
 variants:
@@ -95,6 +96,8 @@ variants:
     prewhiten: true
   - name: linear detrend
     detrend: linear
+  - name: log-mean
+    average: log_mean
   - name: picked angle
     wavefronts: picked_angle
 
