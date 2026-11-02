@@ -34,7 +34,12 @@ for v in VARIANTS:
         paths[v].write_bytes(pickle.dumps(wv))
 
 tools.wavefront_values_path = lambda remove_array_tilt, remove_pattern="none": paths[remove_pattern]
-est = {v: tools.estimate_F_phi_chi(remove_array_tilt=True, remove_pattern=v) for v in VARIANTS}
+# average="log_mean": the bias-corrected log-mean these results were made with (the default became "mean"
+# on 2026-11-02)
+est = {
+    v: tools.estimate_F_phi_chi(remove_array_tilt=True, remove_pattern=v, average="log_mean")
+    for v in VARIANTS
+}
 
 rays = ["+7", "-7", "+6", "-6"]
 fig, axes = plt.subplots(2, 4, figsize=(15, 7), sharex=True, sharey="row")

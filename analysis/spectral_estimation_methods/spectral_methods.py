@@ -27,15 +27,16 @@ SEED = 0
 # arrivals; fitted GM 0.19): phi 1.56 rad^2 m, chi 0.279 m
 NOISE = {"phi_noise": 1.56, "chi_noise": 0.279}
 
-# "no detrending" is the mean removal of the current stack (detrend: constant)
+# "no detrending" is the mean removal of the current stack (detrend: constant). average="log_mean" pins the
+# bias-corrected log-mean these results were made with (the Estimator default became "mean" on 2026-11-02).
 METHODS = {
-    "rectangular": E.Estimator(name="rectangular", bad_elements=(), window="rectangular"),
-    "Hann (current)": E.Estimator(name="hann", bad_elements=(), window="hann"),
+    "rectangular": E.Estimator(name="rectangular", bad_elements=(), window="rectangular", average="log_mean"),
+    "Hann (current)": E.Estimator(name="hann", bad_elements=(), window="hann", average="log_mean"),
     "first difference, rectangular, postcolored": E.Estimator(
-        name="prewhiten", bad_elements=(), window="rectangular", prewhiten=True
+        name="prewhiten", bad_elements=(), window="rectangular", prewhiten=True, average="log_mean"
     ),
     "first difference, Hann, postcolored": E.Estimator(
-        name="prewhiten_hann", bad_elements=(), window="hann", prewhiten=True
+        name="prewhiten_hann", bad_elements=(), window="hann", prewhiten=True, average="log_mean"
     ),
 }
 COLORS = ["C3", "C0", "C2", "C1", "C4", "C5"]
