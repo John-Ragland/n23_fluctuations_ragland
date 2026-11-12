@@ -139,20 +139,15 @@ def estimate_array_tilt(peak_locations, omit=ARRAY_TILT_OMIT):
     Returns
     -------
     array_tilt : dict
-        ``array_tilt``: (23,) tilt [deg]; ``mean_angles``: ray_id → transmission-averaged angle
+        ``array_tilt``: (23,) tilt [deg]; ``array_tilt_se``: (23,) its jackknife standard error
+        [deg] (`array_tilt_jackknife_se`); ``mean_angles``: ray_id → transmission-averaged angle
         [deg]; ``angles_plus_tilt``: ray_id → (23,) ``mean_angles[ray_id] + array_tilt`` [deg],
         for every ray including the omitted ones; ``omit``; ``notes``.
     """
     angles = peak_locations["angles"]
     mean_angles = {ray_id: np.nanmean(angles[ray_id]) for ray_id in angles}
 
-    anomalies = np.array(
-        [
-            angles[ray_id] - mean_angles[ray_id]
-            for ray_id in angles
-            if ray_id not in omit
-        ]
-    )
+    anomalies = _array_tilt_anomalies(angles, omit)
     array_tilt = np.nanmean(anomalies, axis=0)
 
     angles_plus_tilt = {
@@ -161,10 +156,205 @@ def estimate_array_tilt(peak_locations, omit=ARRAY_TILT_OMIT):
 
     return {
         "array_tilt": array_tilt,
+        "array_tilt_se": _leave_one_ray_out_se(anomalies),
         "mean_angles": mean_angles,
         "angles_plus_tilt": angles_plus_tilt,
         "omit": tuple(omit),
         "notes": "array tilt is the mean over rays of the demeaned peak_locations arrival angles",
+    }
+
+
+def _array_tilt_anomalies(angles, omit):
+    """(rays, 23) picked angles of the rays not in `omit`, each demeaned over transmissions."""
+    return np.array(
+        [
+            angles[ray_id] - np.nanmean(angles[ray_id])
+            for ray_id in angles
+            if ray_id not in omit
+        ]
+    )
+
+
+def _leave_one_ray_out_se(anomalies):
+    """Leave-one-ray-out jackknife standard error of the mean over rays (axis 0) of `anomalies`."""
+    return _jackknife_se(
+        np.array(
+            [
+                np.nanmean(np.delete(anomalies, k, axis=0), axis=0)
+                for k in range(anomalies.shape[0])
+            ]
+        )
+    )
+
+
+def array_tilt_jackknife_se(peak_locations, omit=ARRAY_TILT_OMIT):
+    """
+    Leave-one-ray-out jackknife standard error of the array tilt of `estimate_array_tilt`.
+
+    The tilt is a mean over rays, so the rays are the jackknife units. Each ray is left out of
+    the average in turn, with every ray's mean angle kept at its full-data value.
+
+    Parameters
+    ----------
+    peak_locations : dict
+        picks from `nescafe23.open_peak_locations()`; only ``angles`` is used
+    omit : tuple of str
+        ray ids left out of the tilt average, as in `estimate_array_tilt`
+
+    Returns
+    -------
+    array_tilt_se : np.ndarray
+        (23,) standard error [deg]
+    """
+    return _leave_one_ray_out_se(_array_tilt_anomalies(peak_locations["angles"], omit))
+
+
+ARRIVAL_TIME_WINDOW = (100, 115)
+"""Reception time window [s] cross-correlated by the arrival time offset estimate."""
+
+ARRIVAL_TIME_ARRAYS = {
+    "upper": (slice(0, 32), np.linspace(125, 540, 50)),
+    "lower": (slice(32, None), np.linspace(885, 1315, 50)),
+}
+"""Hydrophone rows and actual-depth grid [m] of each array in the arrival time offset estimate, as in
+``cli.compute_arrival_time_offset``. The receptions have 60 hydrophones, 32 upper and 28 lower."""
+
+
+def _interp_weights(depths, grid):
+    """(len(grid), len(depths)) linear interpolation matrix onto `grid`, zero outside `depths`."""
+    order = np.argsort(depths)
+    eye = np.eye(len(depths))
+    W = np.zeros((len(grid), len(depths)))
+    for k, h in enumerate(order):
+        W[:, h] = np.interp(grid, depths[order], eye[k], left=0, right=0)
+    return W
+
+
+def _arrival_time_envelope(x, depths, grid):
+    """|reception - its mean| on the depth grid, NaN set to zero, as in ``cli.compute_arrival_time_offset``."""
+    y = _interp_weights(depths, grid) @ x
+    y = y - y.mean()
+    y[np.isnan(y)] = 0
+    return np.abs(y)
+
+
+def _peak_lag(taus, r, subsample):
+    """Lag of the maximum of `r`, refined by a parabola through it and its neighbours if `subsample`."""
+    i = int(np.argmax(r))
+    if not subsample or i in (0, len(r) - 1):
+        return taus[i]
+    y0, y1, y2 = r[i - 1], r[i], r[i + 1]
+    den = y0 - 2 * y1 + y2
+    return taus[i] + (0.5 * (y0 - y2) / den if den != 0 else 0.0) * (taus[1] - taus[0])
+
+
+def arrival_time_shifts(receptions, array, drop=None, subsample=True):
+    """
+    Shift of each transmission's reception envelope relative to the first, for one array.
+
+    Each reception is interpolated onto the array's depth grid (`ARRIVAL_TIME_ARRAYS`), demeaned, and its
+    magnitude cross-correlated in time with the first transmission's, depth by depth. The shift is the lag of
+    the maximum of the correlation summed over depth. With ``subsample=False`` this is the estimate of
+    ``cli.compute_arrival_time_offset``.
+
+    Parameters
+    ----------
+    receptions : list of xr.DataArray
+        complex demodulated receptions, dims ``hydrophone`` (60, with an ``actual_depth`` coordinate) and
+        ``time`` [s], one per transmission (``convert_to_xarray(fn)["dmod"]``)
+    array : str
+        ``"upper"`` or ``"lower"``
+    drop : int, optional
+        hydrophone of the array (counted from the array's first) left out, for the jackknife
+    subsample : bool
+        refine the peak with a parabola, so the shift is not quantized to the sample interval. Default True.
+
+    Returns
+    -------
+    shifts : np.ndarray
+        (n_transmissions,) [s]; the first is zero
+    """
+    rows, grid = ARRIVAL_TIME_ARRAYS[array]
+    envelopes = []
+    for da in receptions:
+        d = da.isel(hydrophone=rows).sel(time=slice(*ARRIVAL_TIME_WINDOW))
+        depths = np.asarray(d.actual_depth.values, dtype=float)
+        x = d.transpose("hydrophone", "time").values
+        if drop is not None:
+            keep = np.arange(len(depths)) != drop
+            depths, x = depths[keep], x[keep]
+        envelopes.append(_arrival_time_envelope(x, depths, grid))
+
+    ts = float(receptions[0].time.diff("time")[0])
+    taus = np.arange(-15 / 2, 15 / 2, ts)[1:]
+    ref = envelopes[0]
+    return np.array(
+        [
+            _peak_lag(
+                taus,
+                signal.fftconvolve(ref, np.flip(e, axis=1), mode="same", axes=1).sum(0),
+                subsample,
+            )
+            for e in envelopes
+        ]
+    )
+
+
+def _jackknife_se(loo):
+    n = loo.shape[0]
+    return np.sqrt((n - 1) / n * np.sum((loo - loo.mean(axis=0)) ** 2, axis=0))
+
+
+def jackknife_arrival_time_offset(receptions, progress=None):
+    """
+    Common arrival time offset with leave-one-hydrophone-out jackknife standard errors.
+
+    The offset is the mean of the upper- and lower-array shifts of `arrival_time_shifts`, with the peak refined
+    to sub-sample lags; without that the jackknife of a quantized argmax is mostly zero. The refined offset
+    differs from the stored ``T_t_estimated.pkl`` by at most ~0.2 ms on the real data.
+
+    The jackknife units are the hydrophones (60: 32 upper, 28 lower): each is left out in turn and its array's
+    shift recomputed. The per-array SEs leave out only that array's hydrophones. The first transmission is the reference, so its
+    SE is zero by construction.
+
+    Parameters
+    ----------
+    receptions : list of xr.DataArray
+        see `arrival_time_shifts`
+    progress : callable, optional
+        called with no arguments after each leave-one-out estimate, one per hydrophone
+
+    Returns
+    -------
+    offset : dict
+        ``dT_t``, ``dT_t_upper``, ``dT_t_lower`` [s] and their ``*_se`` [s], each (n_transmissions,);
+        ``notes``
+    """
+    full = {a: arrival_time_shifts(receptions, a) for a in ARRIVAL_TIME_ARRAYS}
+    loo = {}
+    for a, (rows, _) in ARRIVAL_TIME_ARRAYS.items():
+        n = receptions[0].isel(hydrophone=rows).sizes["hydrophone"]
+        estimates = []
+        for h in range(n):
+            estimates.append(arrival_time_shifts(receptions, a, drop=h))
+            if progress is not None:
+                progress()
+        loo[a] = np.array(estimates)
+
+    loo_avg = np.concatenate(
+        [(loo["upper"] + full["lower"]) / 2, (full["upper"] + loo["lower"]) / 2]
+    )
+    return {
+        "dT_t": (full["upper"] + full["lower"]) / 2,
+        "dT_t_upper": full["upper"],
+        "dT_t_lower": full["lower"],
+        "dT_t_se": _jackknife_se(loo_avg),
+        "dT_t_upper_se": _jackknife_se(loo["upper"]),
+        "dT_t_lower_se": _jackknife_se(loo["lower"]),
+        "notes": (
+            "arrival time offset (cross-correlated reception envelope, parabolic sub-sample peak) with "
+            "leave-one-hydrophone-out jackknife standard errors; dT_t_se jackknifes over every hydrophone of both arrays"
+        ),
     }
 
 

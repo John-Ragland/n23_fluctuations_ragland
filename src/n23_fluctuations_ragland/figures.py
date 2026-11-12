@@ -1124,9 +1124,17 @@ def plot_ctd_fctd(cfg: PublicationFiguresConfig) -> Figure:
 
 
 def plot_arrival_time_shift(cfg: PublicationFiguresConfig) -> Figure:
-    """Common arrival-time shift (top) and lower-array tilt (bottom) per transmission.
+    """Common offsets estimated and removed from the receptions.
 
-    Reads the outputs of ``compute arrival time offset`` and ``estimate array tilt``.
+    (a) per transmission: the common arrival-time shift (left axis, blue, no error bars, since
+    its jackknife SE is ~1 ms on a 0.5 s range) and the lower-array tilt (right axis, red, ±
+    leave-one-ray-out jackknife SE, `tools.array_tilt_jackknife_se`).
+    (b) per lower-array element: the hydrophone pattern phase (left axis, blue) and gain (right
+    axis, red), ± their leave-one-transmission-out jackknife SEs.
+
+    Reads the outputs of ``compute arrival time offset``, ``estimate array tilt`` and
+    ``estimate hydrophone pattern``. An ``array_tilt.pkl`` written before the tilt SE was added
+    gets it recomputed from the peak picks.
     """
     T_t = _load_pickle("T_t_estimated.pkl", "compute arrival time offset")
     if "dT_t_upper" not in T_t or "dT_t_lower" not in T_t:
@@ -1136,31 +1144,40 @@ def plot_arrival_time_shift(cfg: PublicationFiguresConfig) -> Figure:
             "project; rerun 'compute arrival time offset' in `n23_fluctuation_analysis`."
         )
         raise KeyError(msg)
-    # dT_t_upper = T_t["dT_t_upper"]
-    # dT_t_lower = T_t["dT_t_lower"]
     dT_avg = T_t["dT_t"]
-    array_tilt = _load_pickle("array_tilt.pkl", "estimate array tilt")["array_tilt"]
+    tilt = _load_pickle("array_tilt.pkl", "estimate array tilt")
+    array_tilt = tilt["array_tilt"]
+    array_tilt_se = tilt.get("array_tilt_se")
+    if array_tilt_se is None:
+        array_tilt_se = tools.array_tilt_jackknife_se(
+            n23.open_peak_locations(), tilt["omit"]
+        )
+    pattern = _load_pickle("hydrophone_pattern.pkl", "estimate hydrophone pattern")
+
+    blue, red = whoi_colors[2], whoi_colors[1]
+    style = {"lw": 1.2, "marker": "o", "ms": 2}
+    bars = {**style, "capsize": 1.5, "elinewidth": 0.8}
 
     plt.rcParams.update({"font.size": 8})
     plt.rcParams.update({"text.usetex": cfg.usetex})
 
-    fig, axes = plt.subplots(2, 1, figsize=(3.33, 3.5), sharex=True)
+    fig, axes = plt.subplots(2, 1, figsize=(3.33, 3.5))
 
-    plt.sca(axes[0])
-    # plt.plot(
-    #    np.arange(1, 24), dT_t_upper, label="upper array", c="k", linestyle="--", lw=1
-    # )
-    # plt.plot(
-    #    np.arange(1, 24), dT_t_lower, label="lower array", c="k", linestyle="-.", lw=1
-    # )
-    plt.plot(np.arange(1, 24), dT_avg, c="k", lw=2, label="average")
-    plt.ylabel("$\\Delta \\tau$ [s]")
-    # plt.legend(loc="upper right")
+    tx = np.arange(1, 24)
+    axes[0].plot(tx, dT_avg, color=blue, **style)
+    axes[0].set_ylabel("$\\Delta t$ (blue) [s]")
+    axes[0].set_xlabel("transmission number")
+    ax_tilt = axes[0].twinx()
+    ax_tilt.errorbar(tx, array_tilt, yerr=array_tilt_se, color=red, **bars)
+    ax_tilt.set_ylabel("array tilt (red) [$^{\\circ}$]")
 
-    plt.sca(axes[1])
-    plt.plot(np.arange(1, 24), array_tilt, c="k", lw=2)
-    plt.ylabel("array tilt [$^\\circ$]")
-    plt.xlabel("transmission number")
+    el = np.arange(1, len(pattern["phase"]) + 1)
+    axes[1].errorbar(el, pattern["phase"], yerr=pattern["phase_se"], color=blue, **bars)
+    axes[1].set_ylabel("phase (blue) [rad]")
+    axes[1].set_xlabel("lower-array hydrophone")
+    ax_gain = axes[1].twinx()
+    ax_gain.errorbar(el, pattern["gain"], yerr=pattern["gain_se"], color=red, **bars)
+    ax_gain.set_ylabel("gain (red)")
 
     plt.tight_layout()
     label_panels(axes, "upper left")

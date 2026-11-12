@@ -158,8 +158,22 @@ uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dash
   - `EIG_INDEXS` — a large hand-picked dict mapping ray IDs to forward/backward eigenray pair indices, built
     via `notebooks/auxiliary/Ray_forward_backward_matching.ipynb`. **Don't regenerate this programmatically**
     without understanding that provenance — it encodes manual matching decisions, not a derivable rule.
+- **Arrival time offset error.** `tools.jackknife_arrival_time_offset(receptions)` (CLI "estimate arrival
+  time offset error", step 1b of `run_all_processing`, ~1 min, writes `T_t_jackknife.pkl`) gives
+  leave-one-hydrophone-out jackknife SEs of the common arrival time offset. It reuses the estimate of
+  `compute_arrival_time_offset` (`tools.arrival_time_shifts`, same grids `ARRIVAL_TIME_ARRAYS` and window), but
+  refines the peak with a parabola, since a jackknife of a sample-quantized argmax is mostly zero. With
+  `subsample=False` it reproduces `T_t_estimated.pkl` to 0.03 ms, and the refined Δt differs from it by ≤0.2 ms.
+  `T_t_estimated.pkl` is left as it was. The interpolation onto the depth grid is a precomputed linear weight
+  matrix (`_interp_weights`), which matches the xarray `interp` of the CLI and is ~4× faster.
+  - The receptions have **60 hydrophones** (32 upper, 28 lower), not 64. The jackknife takes the per-array
+    counts from the data.
+  - The lag grid `arange(-7.5, 7.5, ts)[1:]` of both estimates is offset from the zero lag of
+    `fftconvolve(mode="same")` by a constant: every stored Δt, including Tx 1's, reads +0.29 ms. It is common to
+    all transmissions, so the relative shifts and SEs are unaffected, and it was left in place so as not to
+    move downstream products. The synthetic tests compare shifts relative to Tx 1 for that reason.
 - **`src/n23_fluctuations_ragland/cli.py`** — `main()`: a `questionary` menu wrapping the processing pipeline
-  (arrival time offset, peak locations, array tilt, wavefront values, mean pulse, ray computation, source geometry sweep,
+  (arrival time offset and its jackknife error, peak locations, array tilt, wavefront values, mean pulse, ray computation, source geometry sweep,
   φ/χ least-squares fit), each step decorated with `check_output_exists` to skip/overwrite cached outputs.
   Wavefront values, the φ/χ fit, the coherence-lengths table and the independence test each ask "Remove array tilt?"
   (default yes) and read/write the `*_tilt_removed.pkl` products when it's yes; `run_all_processing()`
@@ -200,9 +214,16 @@ uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dash
     dash-dot 1×, dotted 2×). Both write the same `F_phi_chi_ducted` name.
     `gm_levels` (default `[1, 2]`) sets those levels: one or two positive numbers, solid then dashed, with
     the legend labels built from them; `[1]` draws 1× GM only. It is ignored with `spectra_model: fit`.
-  - `common_arrival_time_shift_estimation` reads `dT_t_upper`/`dT_t_lower` from `T_t_estimated.pkl`.
-    Only this project's "compute arrival time offset" writes those keys. The base `nescafe23` CLI
-    writes the same file without them.
+  - `common_arrival_time_shift_estimation` shows the common offsets that are estimated and removed, each pane
+    twinx with WHOI blue on the left axis and red on the right, black spines, labels `name (color) [units]`.
+    (a) per transmission: Δt (`dT_t`, no error bars) and the array tilt ± `array_tilt_se`; (b) per lower
+    element: the hydrophone pattern phase and gain ± their jackknife SEs (needs "estimate hydrophone pattern").
+    The tilt SE is a leave-one-ray-out jackknife (`tools.array_tilt_jackknife_se`), stored by
+    `estimate_array_tilt` and recomputed from the picks for older `array_tilt.pkl` files. Δt has no bars
+    because its jackknife SE ("estimate arrival time offset error", `T_t_jackknife.pkl`) is 2.11 ms on
+    average (median 1.13 ms, max 12.70 ms on Tx 23, 2026-11-10) on a 0.5 s range.
+    It still requires `dT_t_upper`/`dT_t_lower` in `T_t_estimated.pkl` as a check that this project's
+    "compute arrival time offset" wrote it. The base `nescafe23` CLI writes the same file without them.
 - **`src/n23_fluctuations_ragland/estimation.py`** — experiments on the design decisions of the F_φ/F_χ
   estimate (CLI: "create estimation experiments config" / "run estimation experiments", template
   `templates/estimation_experiments.yaml`). An `Estimator` holds each choice: wavefront source, bad-element

@@ -13,6 +13,7 @@ import xarray as xr
 from nescafe23 import convert_to_xarray
 from nescafe23.data import get_data_dir
 from scipy import signal
+from tqdm import tqdm
 
 from n23_fluctuations_ragland import estimation, figures, tools
 
@@ -78,6 +79,7 @@ def main():
         choices=[
             "run all processing",
             "compute arrival time offset",
+            "estimate arrival time offset error",
             "compute mean pulse",
             "estimate peak locations",
             "estimate array tilt",
@@ -101,6 +103,8 @@ def main():
         run_all_processing()
     elif choice == "compute arrival time offset":
         compute_arrival_time_offset()
+    elif choice == "estimate arrival time offset error":
+        estimate_arrival_time_offset_error()
     elif choice == "compute mean pulse":
         compute_mean_pulse()
     elif choice == "estimate peak locations":
@@ -148,6 +152,11 @@ def run_all_processing():
 
     processing_steps = [
         ("Step 1: Computing arrival time offset", compute_arrival_time_offset, {}),
+        (
+            "Step 1b: Estimating arrival time offset error (jackknife, ~1 min)",
+            estimate_arrival_time_offset_error,
+            {},
+        ),
         ("Step 2: Estimating peak locations", estimate_peak_locations, {}),
         ("Step 3: Estimating array tilt", estimate_array_tilt, {}),
         (
@@ -298,6 +307,43 @@ def compute_arrival_time_offset():
             },
             f,
         )
+
+
+@check_output_exists(lambda: get_data_dir() / "dataproducts" / "T_t_jackknife.pkl")
+def estimate_arrival_time_offset_error():
+    """
+    Leave-one-hydrophone-out jackknife standard error of the arrival time offset
+    (`tools.jackknife_arrival_time_offset`), written to ``T_t_jackknife.pkl``.
+
+    The offset there is refined to sub-sample lags, so it differs slightly (~0.2 ms) from the one in
+    ``T_t_estimated.pkl``, which is left unchanged.
+    """
+    data_dir = get_data_dir()
+    fns = sorted(fsspec.filesystem("").glob(str(data_dir / "dmod" / "dm*.mat")))
+    receptions = [convert_to_xarray(fn)["dmod"] for fn in fns]
+
+    with tqdm(
+        total=receptions[0].sizes["hydrophone"], desc="leave-one-hydrophone-out"
+    ) as bar:
+        offset = tools.jackknife_arrival_time_offset(receptions, progress=bar.update)
+
+    path = data_dir / "dataproducts" / "T_t_jackknife.pkl"
+    with path.open("wb") as f:
+        pickle.dump(offset, f)
+
+    print(arrival_time_offset_error_report(offset))
+    print(f"Wrote {path}")
+    return offset
+
+
+def arrival_time_offset_error_report(offset):
+    """One-line summary of the ``dT_t`` jackknife SEs of `tools.jackknife_arrival_time_offset`."""
+    se = 1e3 * np.asarray(offset["dT_t_se"])
+    return (
+        f"dT_t jackknife SE over {len(se)} transmissions: mean {se.mean():.2f} ms, "
+        f"median {np.median(se):.2f} ms, max {se.max():.2f} ms "
+        f"(transmission {int(np.argmax(se)) + 1})"
+    )
 
 
 @check_output_exists(lambda: get_data_dir() / "dataproducts" / "peak_locations.pkl")

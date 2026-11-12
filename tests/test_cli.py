@@ -468,6 +468,39 @@ def test_estimate_array_tilt_recovers_tilt():
         )
 
 
+def test_array_tilt_jackknife_se_matches_leave_one_ray_out():
+    """The tilt SE is the leave-one-ray-out jackknife of the tilt, NaN picks skipped."""
+    import numpy as np
+
+    from n23_fluctuations_ragland import tools
+
+    rng = np.random.default_rng(1)
+    tilt = rng.normal(0, 1, 23)
+    angles = {f"+{k}": 3.0 * k + tilt + rng.normal(0, 0.2, 23) for k in range(6)}
+    angles["+0"][4] = np.nan
+    angles["-15b"] = rng.normal(0, 3, 23)
+    omit = ("-15b",)
+
+    se = tools.array_tilt_jackknife_se({"angles": angles}, omit=omit)
+    assert np.allclose(
+        tools.estimate_array_tilt({"angles": angles}, omit=omit)["array_tilt_se"], se
+    )
+
+    rays = [r for r in angles if r not in omit]
+    loo = np.array(
+        [
+            tools.estimate_array_tilt(
+                {"angles": {r: angles[r] for r in rays if r != left_out}}, omit=()
+            )["array_tilt"]
+            for left_out in rays
+        ]
+    )
+    n = len(rays)
+    expected = np.sqrt((n - 1) / n * np.sum((loo - loo.mean(0)) ** 2, axis=0))
+    assert np.allclose(se, expected)
+    assert np.all(se > 0)
+
+
 def test_get_wavefront_values_signature():
     """get_wavefront_values reads its own picks and selects the angles with remove_array_tilt."""
     import inspect
@@ -904,3 +937,82 @@ def test_independence_test_vertical_coherence_shapes():
     )
     assert result["pooled"]["r1"].shape == (4 * 21,)
     assert set(result["per_ray"]) == set(tools.DUCTED_RAY_IDS)
+
+
+def _synthetic_receptions(delays, noise=0.0, seed=0):
+    """Receptions with 32 upper and 28 lower hydrophones, a Gaussian pulse delayed by `delays` [s]."""
+    import numpy as np
+    import xarray as xr
+
+    rng = np.random.default_rng(seed)
+    ts = 0.07  # 214 samples in the 100-115 s window, the length of the lag grid
+    time = 100.05 + ts * (np.arange(501) - 200)
+    depth = np.concatenate([np.linspace(110, 560, 32), np.linspace(870, 1330, 28)])
+    out = []
+    for d in delays:
+        pulse = np.exp(-0.5 * ((time - 107.0 - d) / 0.4) ** 2)
+        x = np.tile(pulse, (60, 1)) * (1 + noise * rng.normal(size=(60, 1)))
+        x = x + noise * rng.normal(size=x.shape)
+        out.append(
+            xr.DataArray(
+                x.astype(complex),
+                dims=("hydrophone", "time"),
+                coords={"time": time, "actual_depth": ("hydrophone", depth)},
+            )
+        )
+    return out
+
+
+def test_arrival_time_shifts_recover_delay():
+    """Sub-sample delays are recovered (shift = -delay); the argmax is quantized to the sample interval.
+
+    Shifts are compared relative to the first transmission: the lag grid of the estimate is offset from the
+    zero lag of ``fftconvolve(mode="same")`` by a constant (0.06 s here, 0.29 ms on the real data).
+    """
+    import numpy as np
+
+    from n23_fluctuations_ragland import tools
+
+    delays = np.array([0.0, 0.31, -0.52])
+    rx = _synthetic_receptions(delays)
+    for array in ("upper", "lower"):
+        shifts = tools.arrival_time_shifts(rx, array)
+        assert np.allclose(shifts - shifts[0], -delays, atol=0.005)
+        coarse = tools.arrival_time_shifts(rx, array, subsample=False)
+        assert np.allclose(coarse - coarse[0], -delays, atol=0.07)
+
+
+def test_jackknife_arrival_time_offset_leaves_out_every_hydrophone():
+    import numpy as np
+
+    from n23_fluctuations_ragland import tools
+
+    delays = np.array([0.0, 0.2, -0.4, 0.13])
+    rx = _synthetic_receptions(delays, noise=0.05)
+    calls = []
+    result = tools.jackknife_arrival_time_offset(rx, progress=lambda: calls.append(1))
+
+    assert len(calls) == 60  # 32 upper + 28 lower, each left out once
+    assert np.allclose(
+        result["dT_t"], (result["dT_t_upper"] + result["dT_t_lower"]) / 2
+    )
+    assert np.allclose(result["dT_t"] - result["dT_t"][0], -delays, atol=0.01)
+    for key in ("dT_t_se", "dT_t_upper_se", "dT_t_lower_se"):
+        se = result[key]
+        assert se[0] < 1e-12  # the first transmission is the reference
+        assert np.all(np.isfinite(se))
+        assert np.all(se[1:] > 0)
+        assert np.all(se < 0.01)
+
+
+def test_menu_has_arrival_time_offset_error():
+    import inspect
+
+    import n23_fluctuations_ragland.cli as cli_mod
+
+    source = inspect.getsource(cli_mod.main)
+    assert '"estimate arrival time offset error"' in source
+    assert "estimate_arrival_time_offset_error()" in source
+    assert "estimate_arrival_time_offset_error" in inspect.getsource(
+        cli_mod.run_all_processing
+    )
