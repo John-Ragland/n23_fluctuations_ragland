@@ -69,15 +69,55 @@ def test_remove_array_tilt_defaults_on(tmp_path):
     assert figures.load_config(path).remove_array_tilt is False
 
 
-def test_wavefront_values_follow_remove_array_tilt(monkeypatch):
-    monkeypatch.setattr(figures, "_wavefront_values", lambda: "with tilt")
-    monkeypatch.setattr(
-        figures, "_wavefront_values_tilt_removed", lambda: "tilt removed"
+def test_dilation_is_not_a_config_key(tmp_path):
+    """The dilation option was removed, so an old config that still sets it is rejected."""
+    path = tmp_path / "config.yaml"
+    path.write_text("dilation: true\n")
+    with pytest.raises(figures.ConfigError):
+        figures.load_config(path)
+
+
+def test_wavefront_values_follow_remove_array_tilt(monkeypatch, tmp_path):
+    monkeypatch.setattr(figures.tools, "get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(figures, "_wavefront_values", lambda name: name)
+    cfg = figures.PublicationFiguresConfig(remove_pattern="none")
+    assert figures._wavefront_values_for(cfg) == "wavefront_values_tilt_removed.pkl"
+    cfg = figures.PublicationFiguresConfig(
+        remove_array_tilt=False, remove_pattern="none"
     )
+    assert figures._wavefront_values_for(cfg) == "wavefront_values.pkl"
     cfg = figures.PublicationFiguresConfig()
-    assert figures._wavefront_values_for(cfg) == "tilt removed"
-    cfg = figures.PublicationFiguresConfig(remove_array_tilt=False)
-    assert figures._wavefront_values_for(cfg) == "with tilt"
+    assert (
+        figures._wavefront_values_for(cfg)
+        == "wavefront_values_tilt_removed_phase_magnitude_removed.pkl"
+    )
+
+
+def test_remove_pattern_config(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("remove_pattern: phase\n")
+    assert figures.load_config(path).remove_pattern == "phase"
+    assert figures.PublicationFiguresConfig().remove_pattern == "both"
+    path.write_text("remove_pattern: gain\n")
+    with pytest.raises(figures.ConfigError, match="remove_pattern"):
+        figures.load_config(path)
+
+
+def test_spectral_method_config(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("{}\n")
+    cfg = figures.load_config(path)
+    assert cfg.window == "hann"
+    assert cfg.first_difference is True
+    for window in ("tukey", "rectangular"):
+        path.write_text(f"window: {window}\nfirst_difference: true\n")
+        cfg = figures.load_config(path)
+        assert cfg.window == window
+        assert cfg.first_difference is True
+    for bad in ("window: hamming\n", "hann: false\n", "first_difference: yes please\n"):
+        path.write_text(bad)
+        with pytest.raises(figures.ConfigError, match=r"window|hann|first_difference"):
+            figures.load_config(path)
 
 
 def test_missing_config_says_how_to_make_one(tmp_path):
@@ -153,3 +193,46 @@ def test_label_panels_rejects_bad_locations():
     with pytest.raises(ValueError, match="unknown panel label location"):
         figures.label_panels(axes, "top middle")
     plt.close(fig)
+
+
+def test_spectra_model_defaults_to_gm_levels(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("{}\n")
+    assert figures.load_config(path).spectra_model == "gm_levels"
+    path.write_text("spectra_model: fit\n")
+    assert figures.load_config(path).spectra_model == "fit"
+    path.write_text("spectra_model: 3xGM\n")
+    with pytest.raises(figures.ConfigError):
+        figures.load_config(path)
+
+
+def test_gm_levels_config(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("{}\n")
+    assert figures.load_config(path).gm_levels == (1.0,)
+    path.write_text("gm_levels: [1, 2]\n")
+    assert figures.load_config(path).gm_levels == (1.0, 2.0)
+    path.write_text("gm_levels: [0.5, 3]\n")
+    assert figures.load_config(path).gm_levels == (0.5, 3.0)
+    for bad in ["[]", "[1, 2, 3]", "[0]", "[-1]", "1", "[true]", "[one]"]:
+        path.write_text(f"gm_levels: {bad}\n")
+        with pytest.raises(figures.ConfigError):
+            figures.load_config(path)
+
+
+def test_defaults_are_the_paper_settings(tmp_path):
+    """The default config (and so the template and 'reproduce paper') builds the figures as in the paper."""
+    cfg = figures.load_config(figures.write_config_template(tmp_path))
+    for key, value in figures.tools.PAPER_SETTINGS.items():
+        assert getattr(cfg, key) == value, key
+    assert cfg.spectra_model == "gm_levels"
+    assert cfg.gm_levels == (1.0,)
+
+
+def test_map_input_paths(monkeypatch, tmp_path):
+    monkeypatch.setattr(figures, "get_data_dir", lambda: tmp_path)
+    paths = figures.map_input_paths(figures.PublicationFiguresConfig())
+    assert paths["bathymetry"] == tmp_path / "environment_data" / "map_bathy.nc"
+    assert paths["ssh"] == tmp_path / "environment_data" / figures.SSH_FILENAME
+    cfg = figures.PublicationFiguresConfig(map=figures.MapConfig(ssh="/x/ssh.nc"))
+    assert figures.map_input_paths(cfg)["ssh"] == Path("/x/ssh.nc")

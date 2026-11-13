@@ -1,0 +1,137 @@
+# Estimation experiments config for n23_fluctuations_ragland.
+#
+# Compares design decisions in the estimation of F_phi and F_chi from the wavefront values
+# (n23_fluctuations_ragland.estimation). Not part of the paper, so not in the CLI; run with
+# estimation.run_experiment(estimation.load_config(path)). Needs wavefront_values.pkl /
+# wavefront_values_tilt_removed.pkl (tools.get_wavefront_values) and
+# ray_run_forward_back.pkl under $NESCAFE23_DATADIR/dataproducts.
+#
+# Writes to output_dir:
+#   spectra          observed F_phi, F_chi of every variant (± jackknife SE) and its fitted model (dashed)
+#   fit_summary      fitted GM and noise levels ± leave-one-transmission-out jackknife SE (+ .csv)
+#   common_patterns  per-hydrophone phase / log-amplitude pattern common to the transmissions
+#   synthetic_bias   median log10(estimate / truth) of every variant on synthetic data with known spectra
+#   synthetic_fits   fitted / true GM and noise levels on the synthetic data (+ synthetic_summary.csv)
+#   results.pkl      everything above
+#
+# An unknown key is an error.
+
+# Where results are written. A relative path is relative to this file.
+output_dir: estimation_experiments
+
+# Figure formats (pdf, png, svg).
+formats: [pdf, png]
+
+usetex: false
+
+ray_ids: ["+7", "-7", "+6", "-6"]
+
+# The estimator every variant starts from. It uses all 28 elements: elements 4, 5 and 20 carry a constant
+# phase offset (about -1.1 rad, the same on every transmission and on every arrival from 7 to 29 deg, up-
+# and down-going), which the common phase removal takes out, estimated from all arrivals. The "reference" variant below is the current tools.estimate_F_phi_chi(
+# remove_array_tilt=True), which omits them instead.
+base:
+  # wavefront values: tilt_removed (each ray beamformed at its mean angle + the array tilt; the
+  # per-transmission angle fluctuation stays in the phase as a linear trend) or picked_angle (beamformed
+  # at each transmission's picked angle, which removes most of the linear trend already).
+  # tilt_removed_phase, tilt_removed_magnitude, tilt_removed_both: tilt_removed with the hydrophone
+  # pattern ('estimate hydrophone pattern') removed from the receptions before beamforming, the phase
+  # as a time delay per element, the magnitude as a gain (wavefront_values_tilt_removed_*_removed.pkl).
+  # With the phase removed, common_phase: none and bad_elements: [] test the time-domain removal.
+  wavefronts: tilt_removed
+  # elements excluded from phase (and from log-amplitude if mask_bad_elements_log_amplitude)
+  bad_elements: []
+  # zero (= the fitted trend, after detrending) or linear (interpolated along the array)
+  bad_element_fill: zero
+  mask_bad_elements_log_amplitude: false
+  # removed from each transmission along the array: constant (mean) or linear
+  detrend: constant
+  # pattern common to the transmissions: none, per_ray (mean over the transmissions of each ray),
+  # all_rays (mean over transmissions and the rays in ray_ids) or all_arrivals (mean over transmissions and
+  # every lower-array arrival except common_omit, ducted and bottom-bounced). The common phase is removed as
+  # phasors before unwrapping and then as the mean of the detrended, unwrapped records.
+  common_phase: all_arrivals
+  common_log_amplitude: none
+  # arrivals left out of all_arrivals; the default is the array tilt's ARRAY_TILT_OMIT, the arrivals with
+  # the fewest good QC flags (and the ones whose patterns disagree with the others)
+  common_omit: ["-15b", "-14b", "-6b", "-13b"]
+  # form the pattern only from transmissions whose pick has QC flag 1 or 5
+  common_qc_only: true
+  # rescale by n / (n - 1) for the variance a mean of n records removes from each record
+  correct_common_removal: true
+  # first-difference the records and divide the spectra by |2 sin(pi m dz)|^2
+  prewhiten: false
+  # rectangular, hann, tukey (tukey_alpha) or multitaper (DPSS, multitaper_nw, multitaper_k)
+  window: hann
+  tukey_alpha: 0.5
+  multitaper_nw: 2.0
+  multitaper_k: 3
+  # mean (arithmetic) or log_mean (bias-corrected mean of log10 spectra, the geometric mean over
+  # transmissions; low when the spectrum varies between transmissions)
+  average: mean
+
+# Estimators to compare. Each entry overrides `base`; name is required and unique.
+variants:
+  - name: all elements (hann)
+  - name: reference (omit 4, 5, 20)
+    bad_elements: [4, 5, 20]
+    common_phase: none
+  - name: all elements, no common removal
+    common_phase: none
+  - name: common phase (per ray)
+    common_phase: per_ray
+  - name: common phase (ducted rays)
+    common_phase: all_rays
+  - name: + common log-amplitude (all arrivals)
+    common_log_amplitude: all_arrivals
+  - name: + common log-amplitude (per ray)
+    common_log_amplitude: per_ray
+  - name: rectangular
+    window: rectangular
+  - name: tukey 0.5
+    window: tukey
+  - name: multitaper NW=2 K=3
+    window: multitaper
+  - name: rectangular + prewhiten
+    window: rectangular
+    prewhiten: true
+  - name: linear detrend
+    detrend: linear
+  - name: log-mean
+    average: log_mean
+  - name: picked angle
+    wavefronts: picked_angle
+
+# Optional factorial grid over `base`, appended to the variants (names are generated), e.g.
+# sweep:
+#   window: [hann, tukey, multitaper]
+#   detrend: [constant, linear]
+#   common_log_amplitude: [none, per_ray]
+sweep: null
+
+# Fit the GM level and noise levels to every variant, and their jackknife SEs.
+fit: true
+fit_jackknife: true
+
+# Monte Carlo on synthetic wavefront values with known spectra: GM model + white noise, 23
+# transmissions per realization, the same realizations for every variant.
+synthetic:
+  enabled: true
+  n_realizations: 200
+  seed: 0
+  # true GM and noise levels; null = the fit of `base` to the observations, per ray
+  GM: null
+  phi_noise: null
+  chi_noise: null
+  # length (in 9 m samples) of the record each 28-element array is cut from, so variance at scales
+  # longer than the array is present
+  record_length: 4096
+  # spectrum below mode 1, where the GM model ends: zero or flat (continued at the edge value)
+  low_wavenumber: zero
+  # none, or observed: add the observed per-ray common patterns of `base` to every transmission.
+  # Only the rays in ray_ids are synthesized, so all_arrivals pools just those here (= all_rays).
+  common_pattern: none
+  # rms random plane-wave angle error per transmission [deg], e.g. an array tilt error
+  angle_jitter_deg: 0.0
+  fc: 250.0
+  c0: 1500.0

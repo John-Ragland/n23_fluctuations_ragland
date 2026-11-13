@@ -1,8 +1,12 @@
 # Publication figures config for n23_fluctuations_ragland.
 #
 # Generate the figures with `n23_fluctuation_analysis` -> "generate publication figures".
-# The figures only read cached data products under $NESCAFE23_DATADIR/dataproducts, so run
-# the processing pipeline ("run all processing") first.
+# The figures read cached data products under $NESCAFE23_DATADIR/dataproducts, so run the
+# processing pipeline first ("reproduce paper" runs it and builds these figures with these defaults).
+# Acoustic_Receptions and 2D_slice also read the raw receptions (dmod/dm*.mat).
+#
+# The defaults are the settings of the paper (tools.PAPER_SETTINGS). The other values are for
+# exploration, and some need data products that only the Python API makes (see each option).
 #
 # An unknown key is an error.
 
@@ -39,6 +43,36 @@ seed: 0
 # phi_chi_LS_fit_tilt_removed.pkl) in F_phi_chi_ducted, Ducted_Intensity_Distribution and
 # Ducted_VC. false = the per-transmission picked angles (wavefront_values.pkl, phi_chi_LS_fit.pkl).
 remove_array_tilt: true
+
+# Hydrophone pattern removed from the receptions before beamforming, in F_phi_chi_ducted,
+# Ducted_Intensity_Distribution and Ducted_VC: none, phase (removed as a time delay per element),
+# magnitude (a gain per element) or both (the paper). The pattern and the paper's wavefront values come
+# from 'compute wavefront values and hydrophone pattern' (hydrophone_pattern.pkl,
+# wavefront_values_tilt_removed_phase_magnitude_removed.pkl); other choices need wavefront values made with
+# tools.get_wavefront_values. With the phase removed, F_phi_chi_ducted uses all 28 elements instead of
+# zero-filling 4, 5 and 20.
+remove_pattern: both
+
+# Spectral estimation method of the observed spectra in F_phi_chi_ducted (tools.estimate_F_phi_chi).
+# window: taper of each depth record: hann, tukey (alpha = 0.3, flat over the middle 70%) or
+# rectangular (untapered).
+# first_difference: first-difference each record along the array before the taper and postcolor the
+# periodogram by 1/|2 sin(pi m dz)|^2 (the record is then 27 elements, so the wavenumbers shift
+# slightly). The paper uses hann with first_difference true. With spectra_model: fit, the fit must be made
+# with the same choices (tools.compute_phi_chi_LS_fit); every choice but window hann, first_difference
+# false adds a suffix to the fit file: _first_difference and/or _tukey / _rectangular
+# (e.g. phi_chi_LS_fit_tilt_removed_phase_magnitude_removed_first_difference.pkl).
+window: hann
+first_difference: true
+
+# Model curves of F_phi_chi_ducted. gm_levels (the paper) = the GM levels below without noise, like
+# Ducted_VC; it needs no fit. fit = the least squares GM level and noise levels (phi_chi_LS_fit*.pkl,
+# made with tools.compute_phi_chi_LS_fit; not part of the paper). Both use the same output name.
+spectra_model: gm_levels
+
+# GM levels drawn when spectra_model is gm_levels: one or two positive numbers, solid then dashed.
+# [1] = 1x GM only (the paper); [1, 2] adds 2x GM dashed.
+gm_levels: [1]
 
 map:
   # TrueType font for the map. null -> $NESCAFE23_DATADIR/fonts/RedHatDisplay-Medium.ttf

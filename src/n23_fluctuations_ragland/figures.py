@@ -10,8 +10,12 @@ notebook code as possible. The only systematic edits are:
 - ``text.usetex`` follows the config instead of being hard-coded to ``True``;
 - the random jitter in the intensity-distribution scatter is seeded.
 
-The figures only read cached data products, so the processing pipeline
-(``n23_fluctuation_analysis`` → "run all processing") must have been run first.
+The figures read cached data products, so the processing pipeline must have been run first
+(``n23_fluctuation_analysis --reproduce-paper`` runs it and then builds every figure).
+``Acoustic_Receptions`` and ``2D_slice`` also read the raw receptions (``dmod/dm*.mat``).
+
+The config defaults are the settings of the published analysis (`tools.PAPER_SETTINGS`;
+``spectra_model: gm_levels`` with ``gm_levels: [1]``). The other options are kept for exploration.
 
 Usage
 -----
@@ -127,6 +131,12 @@ class MapConfig:
         )
 
 
+# model curves of F_phi_chi_ducted: the least squares GM fit, or fixed GM levels (``gm_levels``)
+SPECTRA_MODELS = ("fit", "gm_levels")
+# linestyles of the fixed GM levels, in order: (ray, -8 overlay on the +7 panel)
+GM_LEVEL_STYLES = (("-", "dashdot"), ("--", "dotted"))
+
+
 @dataclass(frozen=True)
 class PublicationFiguresConfig:
     """Contents of a publication figures ``config.yaml``."""
@@ -137,7 +147,12 @@ class PublicationFiguresConfig:
     dpi: int | None = None
     usetex: bool = True
     seed: int = 0
-    remove_array_tilt: bool = True
+    remove_array_tilt: bool = tools.PAPER_SETTINGS["remove_array_tilt"]
+    remove_pattern: str = tools.PAPER_SETTINGS["remove_pattern"]
+    window: str = tools.PAPER_SETTINGS["window"]
+    first_difference: bool = tools.PAPER_SETTINGS["first_difference"]
+    spectra_model: str = "gm_levels"
+    gm_levels: tuple[float, ...] = (1.0,)
     map: MapConfig = field(default_factory=MapConfig)
 
     def __post_init__(self) -> None:
@@ -160,6 +175,11 @@ class PublicationFiguresConfig:
                 "usetex",
                 "seed",
                 "remove_array_tilt",
+                "remove_pattern",
+                "window",
+                "first_difference",
+                "spectra_model",
+                "gm_levels",
                 "map",
             ),
             path,
@@ -200,9 +220,51 @@ class PublicationFiguresConfig:
             msg = f"{path}.seed: expected an integer, got {seed!r}"
             raise ConfigError(msg)
 
-        remove_array_tilt = data.get("remove_array_tilt", True)
+        remove_array_tilt = data.get("remove_array_tilt", cls.remove_array_tilt)
         if not isinstance(remove_array_tilt, bool):
             msg = f"{path}.remove_array_tilt: expected true or false, got {remove_array_tilt!r}"
+            raise ConfigError(msg)
+
+        remove_pattern = data.get("remove_pattern", cls.remove_pattern)
+        if remove_pattern not in tools.REMOVE_PATTERN_CHOICES:
+            msg = (
+                f"{path}.remove_pattern: expected one of {list(tools.REMOVE_PATTERN_CHOICES)}, "
+                f"got {remove_pattern!r}"
+            )
+            raise ConfigError(msg)
+
+        window = data.get("window", cls.window)
+        if window not in tools.SPECTRAL_WINDOWS:
+            msg = (
+                f"{path}.window: expected one of {list(tools.SPECTRAL_WINDOWS)}, "
+                f"got {window!r}"
+            )
+            raise ConfigError(msg)
+
+        first_difference = data.get("first_difference", cls.first_difference)
+        if not isinstance(first_difference, bool):
+            msg = f"{path}.first_difference: expected true or false, got {first_difference!r}"
+            raise ConfigError(msg)
+
+        spectra_model = data.get("spectra_model", cls.spectra_model)
+        if spectra_model not in SPECTRA_MODELS:
+            msg = f"{path}.spectra_model: expected one of {list(SPECTRA_MODELS)}, got {spectra_model!r}"
+            raise ConfigError(msg)
+
+        gm_levels = data.get("gm_levels", list(cls.gm_levels))
+        if (
+            isinstance(gm_levels, str)
+            or not isinstance(gm_levels, Sequence)
+            or not 1 <= len(gm_levels) <= len(GM_LEVEL_STYLES)
+            or any(
+                isinstance(gm, bool) or not isinstance(gm, (int, float)) or gm <= 0
+                for gm in gm_levels
+            )
+        ):
+            msg = (
+                f"{path}.gm_levels: expected a list of 1 to {len(GM_LEVEL_STYLES)} positive numbers, "
+                f"got {gm_levels!r}"
+            )
             raise ConfigError(msg)
 
         return cls(
@@ -213,6 +275,11 @@ class PublicationFiguresConfig:
             usetex=usetex,
             seed=seed,
             remove_array_tilt=remove_array_tilt,
+            remove_pattern=remove_pattern,
+            window=window,
+            first_difference=first_difference,
+            spectra_model=spectra_model,
+            gm_levels=tuple(float(gm) for gm in gm_levels),
             map=MapConfig.from_mapping(data.get("map") or {}, f"{path}.map"),
         )
 
@@ -295,20 +362,20 @@ def load_config(path: str | Path) -> PublicationFiguresConfig:
 # ---------------------------------------------------------------------------
 
 
-def _dataproduct(name: str, cli_step: str) -> Path:
-    """Path of a cached data product, or an error naming the CLI step that makes it."""
+def _dataproduct(name: str, cli_step: str, hint: str | None = None) -> Path:
+    """Path of a cached data product, or an error naming the CLI step that makes it (or ``hint``)."""
     fn = get_data_dir() / "dataproducts" / name
     if not fn.exists():
-        msg = (
-            f"{fn} not found. Run '{cli_step}' in `n23_fluctuation_analysis` "
-            "(or 'run all processing') first."
+        how = hint or (
+            f"Run '{cli_step}' in `n23_fluctuation_analysis` (or 'reproduce paper') first."
         )
+        msg = f"{fn} not found. {how}"
         raise FileNotFoundError(msg)
     return fn
 
 
-def _load_pickle(name: str, cli_step: str) -> Any:
-    with _dataproduct(name, cli_step).open("rb") as f:
+def _load_pickle(name: str, cli_step: str, hint: str | None = None) -> Any:
+    with _dataproduct(name, cli_step, hint).open("rb") as f:
         return pickle.load(f)
 
 
@@ -323,22 +390,16 @@ def _ray_run() -> dict[str, Any]:
 
 
 @cache
-def _wavefront_values() -> dict[str, Any]:
-    return _load_pickle("wavefront_values.pkl", "compute wavefront values")  # type: ignore[no-any-return]
-
-
-@cache
-def _wavefront_values_tilt_removed() -> dict[str, Any]:
-    return _load_pickle(  # type: ignore[no-any-return]
-        "wavefront_values_tilt_removed.pkl", "compute wavefront values"
-    )
+def _wavefront_values(name: str) -> dict[str, Any]:
+    return _load_pickle(name, "compute wavefront values")  # type: ignore[no-any-return]
 
 
 def _wavefront_values_for(cfg: PublicationFiguresConfig) -> dict[str, Any]:
-    """The wavefront values with the array tilt removed or not, per ``cfg.remove_array_tilt``."""
-    if cfg.remove_array_tilt:
-        return _wavefront_values_tilt_removed()
-    return _wavefront_values()
+    """The wavefront values with the array tilt and the hydrophone pattern removed or not, per
+    ``cfg.remove_array_tilt`` and ``cfg.remove_pattern`` (`tools.wavefront_values_path`)."""
+    return _wavefront_values(
+        tools.wavefront_values_path(cfg.remove_array_tilt, cfg.remove_pattern).name
+    )
 
 
 def clear_cache() -> None:
@@ -346,7 +407,6 @@ def clear_cache() -> None:
     _receptions.cache_clear()
     _ray_run.cache_clear()
     _wavefront_values.cache_clear()
-    _wavefront_values_tilt_removed.cache_clear()
 
 
 # ---------------------------------------------------------------------------
@@ -652,6 +712,28 @@ def label_panels(
 # ---------------------------------------------------------------------------
 
 
+SSH_FILENAME = (
+    "cmems_obs-sl_glo_phy-ssh_my_allsat-l4-duacs-0.125deg_P1D_1773078040918.nc"
+)
+
+
+def map_input_paths(cfg: PublicationFiguresConfig) -> dict[str, Path]:
+    """Input files of the ``Map`` figure (``font``, ``bathymetry``, ``ssh``): the config's, or the defaults under
+    ``NESCAFE23_DATADIR``. A missing font only falls back to the default font."""
+    data_dir = get_data_dir()
+
+    def resolve(value: str | None, default: Path) -> Path:
+        return Path(value).expanduser() if value else default
+
+    return {
+        "font": resolve(cfg.map.font, data_dir / "fonts" / "RedHatDisplay-Medium.ttf"),
+        "bathymetry": resolve(
+            cfg.map.bathymetry, data_dir / "environment_data" / "map_bathy.nc"
+        ),
+        "ssh": resolve(cfg.map.ssh, data_dir / "environment_data" / SSH_FILENAME),
+    }
+
+
 def plot_map(cfg: PublicationFiguresConfig) -> Figure:
     """Study-area map: bathymetry, SSH front, hydrographic survey, moorings, globe inset.
 
@@ -659,13 +741,10 @@ def plot_map(cfg: PublicationFiguresConfig) -> Figure:
     ``map_inset`` cells), with the callouts of ``reference/Map.png`` added in code.
     """
     data_dir = get_data_dir()
+    paths = map_input_paths(cfg)
 
     # font (poster presentation settings)
-    font_path = (
-        Path(cfg.map.font).expanduser()
-        if cfg.map.font
-        else data_dir / "fonts" / "RedHatDisplay-Medium.ttf"
-    )
+    font_path = paths["font"]
     if font_path.exists():
         fm.fontManager.addfont(str(font_path))
         plt.rcParams["font.family"] = fm.FontProperties(fname=font_path).get_name()
@@ -682,23 +761,12 @@ def plot_map(cfg: PublicationFiguresConfig) -> Figure:
     ]
 
     # load environment data
-    fn = (
-        Path(cfg.map.bathymetry).expanduser()
-        if cfg.map.bathymetry
-        else data_dir / "environment_data" / "map_bathy.nc"
-    )
-    bathy = xr.open_dataset(fn)["elevation"]
+    bathy = xr.open_dataset(paths["bathymetry"])["elevation"]
 
     fn = data_dir / "environment_data" / "FCTD_SoundSpeed_Colosi_v2.mat"
     fctd = tools.get_fctd(fn=fn, r_smooth=3000)
 
-    fn = (
-        Path(cfg.map.ssh).expanduser()
-        if cfg.map.ssh
-        else data_dir
-        / "environment_data"
-        / "cmems_obs-sl_glo_phy-ssh_my_allsat-l4-duacs-0.125deg_P1D_1773078040918.nc"
-    )
+    fn = paths["ssh"]
     ssh_full = xr.open_dataset(fn)
 
     ssh_n23 = ssh_full.sel({"time": pd.Timestamp(cfg.map.ssh_dates[0])})["adt"]
@@ -1068,9 +1136,17 @@ def plot_ctd_fctd(cfg: PublicationFiguresConfig) -> Figure:
 
 
 def plot_arrival_time_shift(cfg: PublicationFiguresConfig) -> Figure:
-    """Common arrival-time shift (top) and lower-array tilt (bottom) per transmission.
+    """Common offsets estimated and removed from the receptions.
 
-    Reads the outputs of ``compute arrival time offset`` and ``estimate array tilt``.
+    (a) per transmission: the common arrival-time shift (left axis, blue, no error bars, since
+    its jackknife SE is ~1 ms on a 0.5 s range) and the lower-array tilt (right axis, red, ±
+    leave-one-ray-out jackknife SE, `tools.array_tilt_jackknife_se`).
+    (b) per lower-array element: the hydrophone pattern phase (left axis, blue) and gain (right
+    axis, red), ± their leave-one-transmission-out jackknife SEs.
+
+    Reads the outputs of ``compute arrival time offset``, ``estimate array tilt`` and
+    ``estimate hydrophone pattern``. An ``array_tilt.pkl`` written before the tilt SE was added
+    gets it recomputed from the peak picks.
     """
     T_t = _load_pickle("T_t_estimated.pkl", "compute arrival time offset")
     if "dT_t_upper" not in T_t or "dT_t_lower" not in T_t:
@@ -1080,31 +1156,40 @@ def plot_arrival_time_shift(cfg: PublicationFiguresConfig) -> Figure:
             "project; rerun 'compute arrival time offset' in `n23_fluctuation_analysis`."
         )
         raise KeyError(msg)
-    # dT_t_upper = T_t["dT_t_upper"]
-    # dT_t_lower = T_t["dT_t_lower"]
     dT_avg = T_t["dT_t"]
-    array_tilt = _load_pickle("array_tilt.pkl", "estimate array tilt")["array_tilt"]
+    tilt = _load_pickle("array_tilt.pkl", "estimate array tilt")
+    array_tilt = tilt["array_tilt"]
+    array_tilt_se = tilt.get("array_tilt_se")
+    if array_tilt_se is None:
+        array_tilt_se = tools.array_tilt_jackknife_se(
+            n23.open_peak_locations(), tilt["omit"]
+        )
+    pattern = _load_pickle("hydrophone_pattern.pkl", "estimate hydrophone pattern")
+
+    blue, red = whoi_colors[2], whoi_colors[1]
+    style = {"lw": 1.2, "marker": "o", "ms": 2}
+    bars = {**style, "capsize": 1.5, "elinewidth": 0.8}
 
     plt.rcParams.update({"font.size": 8})
     plt.rcParams.update({"text.usetex": cfg.usetex})
 
-    fig, axes = plt.subplots(2, 1, figsize=(3.33, 3.5), sharex=True)
+    fig, axes = plt.subplots(2, 1, figsize=(3.33, 3.5))
 
-    plt.sca(axes[0])
-    # plt.plot(
-    #    np.arange(1, 24), dT_t_upper, label="upper array", c="k", linestyle="--", lw=1
-    # )
-    # plt.plot(
-    #    np.arange(1, 24), dT_t_lower, label="lower array", c="k", linestyle="-.", lw=1
-    # )
-    plt.plot(np.arange(1, 24), dT_avg, c="k", lw=2, label="average")
-    plt.ylabel("$\\Delta \\tau$ [s]")
-    # plt.legend(loc="upper right")
+    tx = np.arange(1, 24)
+    axes[0].plot(tx, dT_avg, color=blue, **style)
+    axes[0].set_ylabel("$\\Delta t$ (blue) [s]")
+    axes[0].set_xlabel("transmission number")
+    ax_tilt = axes[0].twinx()
+    ax_tilt.errorbar(tx, array_tilt, yerr=array_tilt_se, color=red, **bars)
+    ax_tilt.set_ylabel("array tilt (red) [$^{\\circ}$]")
 
-    plt.sca(axes[1])
-    plt.plot(np.arange(1, 24), array_tilt, c="k", lw=2)
-    plt.ylabel("array tilt [$^\\circ$]")
-    plt.xlabel("transmission number")
+    el = np.arange(1, len(pattern["phase"]) + 1)
+    axes[1].errorbar(el, pattern["phase"], yerr=pattern["phase_se"], color=blue, **bars)
+    axes[1].set_ylabel("phase (blue) [rad]")
+    axes[1].set_xlabel("lower-array hydrophone")
+    ax_gain = axes[1].twinx()
+    ax_gain.errorbar(el, pattern["gain"], yerr=pattern["gain_se"], color=red, **bars)
+    ax_gain.set_ylabel("gain (red)")
 
     plt.tight_layout()
     label_panels(axes, "upper left")
@@ -1277,12 +1362,16 @@ def plot_acoustic_receptions(cfg: PublicationFiguresConfig) -> Figure:
 
     # Arrival annotations (added by hand to the published figure; positions match
     # reference/Acoustic_Receptions.pdf). (label, ellipse center, width, height, label xy)
+    # The labels follow the peak picks (`open_peak_locations`) for this transmission,
+    # not the reference, which swapped +7 and -7. The late -9 deg arrival is +7 with -8
+    # unresolved under it (traced 2 ms apart); -6b is not labelled in the reference.
     arrivals = [
         ("-5b", (100.505, 11.2), 0.183, 16.7, (100.387, 17.3)),
         ("+6", (100.851, 7.6), 0.062, 9.9, (100.80, 11.3)),
-        ("+7", (100.917, 5.4), 0.059, 9.6, (100.979, 3.9)),
+        ("-7", (100.917, 5.4), 0.059, 9.6, (100.979, 3.9)),
         ("-6", (100.738, -11.6), 0.088, 11.0, (100.658, -7.2)),
-        ("-7/+8", (101.065, -11.3), 0.115, 12.8, (101.19, -12.7)),
+        ("-6b", (100.952, -18.5), 0.059, 8.4, (100.952, -12.9)),
+        ("+7/-8", (101.065, -11.3), 0.115, 12.8, (101.19, -12.7)),
         ("+6b", (101.295, 14.5), 0.062, 8.4, (101.373, 9.4)),
         ("+7b", (101.728, -21.2), 0.059, 8.4, (101.648, -16.0)),
     ]
@@ -1462,9 +1551,17 @@ def plot_phase_structure_integrand(cfg: PublicationFiguresConfig) -> Figure:
 def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
     """``publication_figures/Phi_Chi_Spectra.ipynb``: observed vs. GM-model phase/log-amplitude spectra.
 
-    The observed spectra are the bias-corrected log-means of the per-transmission periodograms, and the
+    The observed spectra are the arithmetic means of the per-transmission periodograms, and the
     shaded bands are ± their leave-one-transmission-out jackknife standard error
-    (`tools.estimate_F_phi_chi`).
+    (`tools.estimate_F_phi_chi`), with the spectral estimation method of ``cfg.window`` and
+    ``cfg.first_difference``. The fit read with ``spectra_model: fit`` is the one made with the same method
+    (`tools.phi_chi_LS_fit_path`).
+
+    ``cfg.spectra_model`` picks the model curves. ``"fit"`` (the notebook) draws the least squares GM
+    level with its noise levels, model + noise dashed. ``"gm_levels"`` draws the GM levels of
+    ``cfg.gm_levels`` (default ``[1]``, 1x GM only, as in the paper; ``[1, 2]`` adds 2x GM dashed) without noise and
+    does not need the fit, like `plot_ducted_vc`; the -8 overlay on the +7 panel is dash-dot for the
+    first level and dotted for the second.
     """
     whoi_colors = ["#00B7BD", "#EE5340"]
 
@@ -1479,15 +1576,36 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
     ]
 
     # open observations
+    _dataproduct(
+        tools.wavefront_values_path(cfg.remove_array_tilt, cfg.remove_pattern).name,
+        "compute wavefront values",
+    )
     m_data, _F_phi_data, _F_chi_data, F_phi_lm, F_phi_ls, F_chi_lm, F_chi_ls = (
-        tools.estimate_F_phi_chi(remove_array_tilt=cfg.remove_array_tilt)
+        tools.estimate_F_phi_chi(
+            remove_array_tilt=cfg.remove_array_tilt,
+            remove_pattern=cfg.remove_pattern,
+            window=cfg.window,
+            first_difference=cfg.first_difference,
+        )
     )
 
-    # open ls parameters for spectra + noise model
-    results = _load_pickle(
-        tools.phi_chi_LS_fit_path(cfg.remove_array_tilt).name,
-        "ɸ χ GM least squares fit",
-    )
+    # GM levels of the model spectra, with their noise levels and linestyles (ray, -8 overlay)
+    fixed_gm = cfg.spectra_model == "gm_levels"
+    if not fixed_gm:
+        # open ls parameters for spectra + noise model
+        results = _load_pickle(
+            tools.phi_chi_LS_fit_path(
+                cfg.remove_array_tilt,
+                cfg.remove_pattern,
+                cfg.window,
+                cfg.first_difference,
+            ).name,
+            "",
+            hint=(
+                "The GM + noise fit is not part of the paper pipeline; make it with "
+                "`tools.compute_phi_chi_LS_fit` (same settings), or use spectra_model: gm_levels."
+            ),
+        )
 
     m = 2 * np.pi * np.logspace(-5, 0, 500)[None, :]  # [rad / m]
 
@@ -1495,60 +1613,92 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
     axes = axes.flatten()
 
     for k, ray_id in enumerate(["+7", "-7", "+6", "-6"]):
-        F_phis_model, F_chis_model, F_phis_model_nonoise, F_chis_model_nonoise = (
-            tools.phi_chi_spectrum_model(
-                m,
-                results[ray_id].x[0],
-                results[ray_id].x[1],
-                results[ray_id].x[2],
-                ray_id,
-                all_paths=True,
-            )
-        )
-        F_phi_model, F_chi_model = F_phis_model[0], F_chis_model[0]
+        if fixed_gm:
+            levels = [
+                (gm, 0, 0, *styles)
+                for gm, styles in zip(cfg.gm_levels, GM_LEVEL_STYLES, strict=False)
+            ]
+        else:
+            levels = [(*results[ray_id].x, "-", "dashdot")]
 
-        # compute model spectra for -8 as well (if +7 arrival)
-        if ray_id == "+7":
-            _, _, F_phi_model_nonoise2, F_chi_model_nonoise2 = (
+        models = []
+        for GM, phi_noise, chi_noise, linestyle, linestyle2 in levels:
+            F_phis_model, F_chis_model, F_phis_model_nonoise, F_chis_model_nonoise = (
                 tools.phi_chi_spectrum_model(
                     m,
-                    results[ray_id].x[0],
-                    results[ray_id].x[1],
-                    results[ray_id].x[2],
-                    "-8",
+                    GM,
+                    phi_noise,
+                    chi_noise,
+                    ray_id,
+                    all_paths=True,
                 )
             )
+            F_phi_model, F_chi_model = F_phis_model[0], F_chis_model[0]
 
-        # extend noise floor to the right
-        nan_mask = np.isnan(F_phi_model)
-        F_phi_model = np.hstack((F_phi_model[~nan_mask], F_phi_model[~nan_mask][-1]))
-        F_chi_model = np.hstack((F_chi_model[~nan_mask], F_chi_model[~nan_mask][-1]))
-        m_extend = np.concatenate((m[:, ~nan_mask], np.array([[100]])), axis=1)
+            # compute model spectra for -8 as well (if +7 arrival)
+            F_phi_model_nonoise2 = F_chi_model_nonoise2 = None
+            if ray_id == "+7":
+                _, _, F_phi_model_nonoise2, F_chi_model_nonoise2 = (
+                    tools.phi_chi_spectrum_model(m, GM, phi_noise, chi_noise, "-8")
+                )
+
+            # extend noise floor to the right
+            nan_mask = np.isnan(F_phi_model)
+            F_phi_model = np.hstack(
+                (F_phi_model[~nan_mask], F_phi_model[~nan_mask][-1])
+            )
+            F_chi_model = np.hstack(
+                (F_chi_model[~nan_mask], F_chi_model[~nan_mask][-1])
+            )
+            m_extend = np.concatenate((m[:, ~nan_mask], np.array([[100]])), axis=1)
+
+            models.append(
+                {
+                    "linestyle": linestyle,
+                    "linestyle2": linestyle2,
+                    "phi": (F_phis_model_nonoise, F_phi_model_nonoise2, F_phi_model),
+                    "chi": (F_chis_model_nonoise, F_chi_model_nonoise2, F_chi_model),
+                    "m_extend": m_extend,
+                }
+            )
 
         plt.sca(axes[k])
 
-        # WFT GMIW F_phi
-        for F_phi_model_nonoise in F_phis_model_nonoise:
-            plt.plot(
-                m[0] / (2 * np.pi), F_phi_model_nonoise, c=colors[0], lw=1.5, alpha=0.85
-            )
+        def plot_models(models, ray_id, key, color):
+            for model in models:
+                F_models_nonoise, F_model_nonoise2, F_model = model[key]
+                for F_model_nonoise in F_models_nonoise:
+                    plt.plot(
+                        m[0] / (2 * np.pi),
+                        F_model_nonoise,
+                        c=color,
+                        lw=1.5,
+                        alpha=0.85,
+                        linestyle=model["linestyle"],
+                    )
 
-        if ray_id == "+7":
-            plt.plot(
-                m[0] / (2 * np.pi),
-                F_phi_model_nonoise2,
-                c=colors[0],
-                linestyle="dashdot",
-                lw=1.5,
-                alpha=0.85,
-            )
-        plt.plot(
-            m_extend[0] / (2 * np.pi),
-            F_phi_model,
-            c=colors[0],
-            lw=0.75,
-            linestyle="dashed",
-        )
+                if ray_id == "+7":
+                    plt.plot(
+                        m[0] / (2 * np.pi),
+                        F_model_nonoise2,
+                        c=color,
+                        linestyle=model["linestyle2"],
+                        lw=1.5,
+                        alpha=0.85,
+                    )
+
+                # model + noise (only the fit has noise levels)
+                if not fixed_gm:
+                    plt.plot(
+                        model["m_extend"][0] / (2 * np.pi),
+                        F_model,
+                        c=color,
+                        lw=0.75,
+                        linestyle="dashed",
+                    )
+
+        # WFT GMIW F_phi
+        plot_models(models, ray_id, "phi", colors[0])
 
         # F_phi observed
         plt.plot(m_data, F_phi_lm[ray_id], c=colors[1], marker="o", markersize=3)
@@ -1562,28 +1712,7 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
         )
 
         # WFT GMIW F_chi
-
-        for F_chi_model_nonoise in F_chis_model_nonoise:
-            plt.plot(
-                m[0] / (2 * np.pi), F_chi_model_nonoise, c=colors[2], lw=1.5, alpha=0.85
-            )
-
-        if ray_id == "+7":
-            plt.plot(
-                m[0] / (2 * np.pi),
-                F_chi_model_nonoise2,
-                c=colors[2],
-                linestyle="dashdot",
-                lw=1.5,
-                alpha=0.85,
-            )
-        plt.plot(
-            m_extend[0] / (2 * np.pi),
-            F_chi_model,
-            c=colors[2],
-            lw=0.75,
-            linestyle="dashed",
-        )
+        plot_models(models, ray_id, "chi", colors[2])
 
         # F_chi observed
         plt.plot(m_data, F_chi_lm[ray_id], c=colors[3], marker="o", markersize=3)
@@ -1600,7 +1729,7 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
         plt.xlim([2e-4, 4e-1])
 
         plt.xlabel("vertical wave number [1/m]")
-        plt.ylabel("$F_{\\phi, \\chi}$ [$\\mathrm{rad} \\ m$]")
+        plt.ylabel("$F_{\\phi, \\chi}$ [$1/\\mathrm{cpm}$]")
 
         plt.yscale("log")
         plt.xscale("log")
@@ -1637,14 +1766,20 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
                 },
             )
 
-        plt.text(
-            0.04,
-            0.07,
-            f"{results[ray_id].x[0]:0.1f} $\\times$ GM Energy\n$F_{{\\phi}}$ noise level = {results[ray_id].x[1]:0.2f} [rad m]\n$F_{{\\chi}}$ noise level = {results[ray_id].x[2]:0.2f} [rad m]",
-            transform=axes[k].transAxes,
-            fontsize=8,
-            bbox={"facecolor": "white", "edgecolor": "k", "pad": 3, "linewidth": 0.5},
-        )
+        if not fixed_gm:
+            plt.text(
+                0.04,
+                0.07,
+                f"{results[ray_id].x[0]:0.1f} $\\times$ GM Energy\n$F_{{\\phi}}$ noise level = {results[ray_id].x[1]:0.2f} [rad m]\n$F_{{\\chi}}$ noise level = {results[ray_id].x[2]:0.2f} [rad m]",
+                transform=axes[k].transAxes,
+                fontsize=8,
+                bbox={
+                    "facecolor": "white",
+                    "edgecolor": "k",
+                    "pad": 3,
+                    "linewidth": 0.5,
+                },
+            )
 
         # add +7,-8 legend
         if ray_id == "+7":
@@ -1669,7 +1804,33 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
                 loc=(0.75, 0.05),
             )
 
-    plt.tight_layout()
+    if fixed_gm:
+        # leave a strip at the bottom for the shared GM-strength legend, as in Ducted_VC
+        plt.tight_layout(rect=(0, 0.045, 1, 1))
+        gm_handles = [
+            mlines.Line2D(
+                [],
+                [],
+                color="k",
+                lw=1.5,
+                linestyle=styles[0],
+                label=f"${gm:g} \\times$ GM",
+            )
+            for gm, styles in zip(cfg.gm_levels, GM_LEVEL_STYLES, strict=False)
+        ]
+        sp = fig.subplotpars
+        gm_leg = fig.legend(
+            handles=gm_handles,
+            ncols=len(gm_handles),
+            loc="lower center",
+            bbox_to_anchor=((sp.left + sp.right) / 2, 0),
+            framealpha=1,
+            fancybox=False,
+            edgecolor="k",
+        )
+        gm_leg.get_frame().set_linewidth(0.5)
+    else:
+        plt.tight_layout()
     # the Ray ID box takes the upper right
     label_panels(axes, "upper left")
     return fig
