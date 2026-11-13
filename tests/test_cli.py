@@ -1215,3 +1215,118 @@ def test_coherence_lengths_uses_paper_settings_and_writes_table(tmp_path, monkey
     assert cli.coherence_lengths(output_path=path) == "TABLE"
     assert loaded == [(True, "both")]
     assert path.read_text() == "TABLE\n"
+
+
+# ---------------------------------------------------------------------------
+# Start-up setup (clean install)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def setup_prompts(monkeypatch):
+    """
+    Script the start-up prompts: ``answers`` is a list of select answers, popped in order (None is Ctrl-C).
+    Reaching the main menu sets ``reached_menu``; `_set_data_dir` sets NESCAFE23_DATADIR to ``new_dir``.
+    """
+    from n23_fluctuations_ragland import cli
+
+    state = {"answers": [], "reached_menu": False, "new_dir": None, "set_calls": 0}
+
+    class Answer:
+        def __init__(self, value):
+            self.value = value
+
+        def ask(self):
+            return self.value
+
+    def select(message, choices, **_):
+        if list(choices) == list(cli.MENU_CHOICES):
+            state["reached_menu"] = True
+            return Answer("exit")
+        answer = state["answers"].pop(0)
+        assert answer is None or answer in choices
+        return Answer(answer)
+
+    def set_data_dir():
+        state["set_calls"] += 1
+        monkeypatch.setenv("NESCAFE23_DATADIR", str(state["new_dir"]))
+
+    monkeypatch.setattr(cli.questionary, "select", select)
+    monkeypatch.setattr(cli, "_set_data_dir", set_data_dir)
+    monkeypatch.delenv("NESCAFE23_DATADIR", raising=False)
+    return state
+
+
+def test_setup_unset_exit(setup_prompts):
+    from n23_fluctuations_ragland import cli
+
+    setup_prompts["answers"] = [cli.SETUP_EXIT]
+    assert cli.main([]) == 1
+    assert not setup_prompts["reached_menu"]
+
+
+def test_setup_ctrl_c_exits(setup_prompts):
+    from n23_fluctuations_ragland import cli
+
+    setup_prompts["answers"] = [None]
+    assert cli.main([]) == 1
+    assert not setup_prompts["reached_menu"]
+
+
+def test_setup_unset_then_set_reaches_menu(tmp_path, setup_prompts):
+    from n23_fluctuations_ragland import cli
+
+    setup_prompts["new_dir"] = _paper_data_dir(tmp_path / "data")
+    setup_prompts["answers"] = [cli.SETUP_SET]
+    assert cli.main([]) == 0
+    assert setup_prompts["set_calls"] == 1
+    assert setup_prompts["reached_menu"]
+
+
+def test_setup_missing_inputs_create_layout_then_continue(
+    tmp_path, monkeypatch, setup_prompts, capsys
+):
+    from n23_fluctuations_ragland import cli
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setenv("NESCAFE23_DATADIR", str(data_dir))
+    setup_prompts["answers"] = [cli.SETUP_LAYOUT, cli.SETUP_CONTINUE]
+    assert cli.main([]) == 0
+    assert setup_prompts["reached_menu"]
+    for name in cli.DATA_LAYOUT:
+        assert (data_dir / name).is_dir()
+    out = capsys.readouterr().out
+    assert "expected 23 receptions, found 0" in out
+    assert "on reasonable request" in out
+
+
+def test_setup_missing_inputs_exit(tmp_path, monkeypatch, setup_prompts):
+    from n23_fluctuations_ragland import cli
+
+    monkeypatch.setenv("NESCAFE23_DATADIR", str(tmp_path))
+    setup_prompts["answers"] = [cli.SETUP_EXIT]
+    assert cli.main([]) == 1
+    assert not setup_prompts["reached_menu"]
+
+
+def test_setup_datadir_not_a_directory_create(tmp_path, monkeypatch, setup_prompts):
+    from n23_fluctuations_ragland import cli
+
+    data_dir = tmp_path / "missing"
+    monkeypatch.setenv("NESCAFE23_DATADIR", str(data_dir))
+    setup_prompts["answers"] = [cli.SETUP_CREATE, cli.SETUP_CONTINUE]
+    assert cli.main([]) == 0
+    assert data_dir.is_dir()
+    assert setup_prompts["reached_menu"]
+
+
+def test_setup_complete_inputs_go_straight_to_menu(
+    tmp_path, monkeypatch, setup_prompts
+):
+    from n23_fluctuations_ragland import cli
+
+    monkeypatch.setenv("NESCAFE23_DATADIR", str(_paper_data_dir(tmp_path / "data")))
+    assert cli.main([]) == 0
+    assert setup_prompts["reached_menu"]
+    assert setup_prompts["answers"] == []

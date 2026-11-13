@@ -110,6 +110,7 @@ MENU_CHOICES = (
     "Table II: vertical coherence lengths",
     "create publication figures config",
     "generate publication figures",
+    "set data directory",
     "exit",
 )
 
@@ -140,16 +141,17 @@ def _parse_args(argv=None):
 
 
 def main(argv=None):
-    """Interactive CLI menu, or ``--reproduce-paper`` without prompts. Returns the exit code."""
+    """
+    Interactive CLI menu, or ``--reproduce-paper`` without prompts. Returns the exit code.
+
+    The interactive menu first runs `ensure_setup`, which asks for ``NESCAFE23_DATADIR`` if it is not set and
+    reports any missing paper inputs before the menu is shown.
+    """
     args = _parse_args(argv)
     if args.reproduce_paper:
         return 0 if reproduce_paper(args.output, reuse=args.reuse) else 1
 
-    try:
-        get_data_dir()
-    except OSError:
-        print("\nNESCAFE23_DATADIR is not set.")
-        print("Run 'nescafe23-init' to configure the data directory, then try again.")
+    if not ensure_setup():
         return 1
 
     choice = questionary.select(
@@ -192,9 +194,114 @@ def main(argv=None):
         create_publication_figures_config()
     elif choice == "generate publication figures":
         generate_publication_figures()
+    elif choice == "set data directory":
+        _set_data_dir()
     elif choice == "exit":
         print("Goodbye!")
     return 0
+
+
+# ---------------------------------------------------------------------------
+# Start-up setup
+# ---------------------------------------------------------------------------
+
+DATA_LAYOUT = {
+    "dmod": "the 23 demodulated receptions dm*.mat (not public, available on request)",
+    "environment_data": "FCTD section, SION/SIOE CTD casts, map bathymetry and SSH (see the README)",
+    "dataproducts": "the intermediate data products this CLI writes",
+}
+
+SETUP_CONTINUE = "continue to the main menu anyway"
+SETUP_CHANGE = "change the data directory"
+SETUP_LAYOUT = "create the expected folder layout"
+SETUP_SET = "set the data directory now"
+SETUP_CREATE = "create this directory"
+SETUP_EXIT = "exit"
+
+
+def _set_data_dir():
+    """Ask for ``NESCAFE23_DATADIR`` and save it to the workspace ``.env`` (only that key is written)."""
+    from nescafe23.cli import _set_data_dir as set_data_dir
+
+    return set_data_dir()
+
+
+def _create_data_layout(data_dir):
+    """Create the subdirectories of `DATA_LAYOUT` under ``data_dir`` and say what goes in each."""
+    for name, contents in DATA_LAYOUT.items():
+        (data_dir / name).mkdir(parents=True, exist_ok=True)
+        print(f"  {data_dir / name}/: {contents}")
+
+
+def _ask(message, choices):
+    return questionary.select(message, choices=choices).ask()
+
+
+def ensure_setup():
+    """
+    Guide a new user through the setup before the menu: the data directory, then the paper's inputs.
+
+    1. ``NESCAFE23_DATADIR`` not set: offer to set it (saved to the workspace ``.env``).
+    2. Set, but not a directory: offer another path or to create it.
+    3. A directory: run `check_paper_inputs` and list what is missing; then offer to continue anyway, change the
+       directory, create the expected folder layout (`DATA_LAYOUT`), or exit.
+
+    Returns
+    -------
+    bool
+        True to go on to the menu, False to exit (also on Ctrl-C at a prompt).
+    """
+    while True:
+        try:
+            data_dir = get_data_dir()
+        except OSError:
+            print(
+                "\nNESCAFE23_DATADIR is not set. It is the directory that holds the experiment data "
+                "(dmod/, environment_data/) and the data products (dataproducts/). It is saved to the "
+                ".env file at the workspace root."
+            )
+            if _ask("What would you like to do?", [SETUP_SET, SETUP_EXIT]) != SETUP_SET:
+                return False
+            _set_data_dir()
+            continue
+
+        if not data_dir.is_dir():
+            print(f"\nNESCAFE23_DATADIR is {data_dir}, which is not a directory.")
+            choice = _ask(
+                "What would you like to do?", [SETUP_CHANGE, SETUP_CREATE, SETUP_EXIT]
+            )
+            if choice == SETUP_CHANGE:
+                _set_data_dir()
+            elif choice == SETUP_CREATE:
+                data_dir.mkdir(parents=True)
+                print(f"✓ Created {data_dir}")
+            else:
+                return False
+            continue
+
+        inputs = check_paper_inputs()
+        for warning in inputs.warnings:
+            print(f"Warning: {warning}")
+        if inputs.ok:
+            print(f"✓ All paper inputs found in {data_dir}")
+            return True
+
+        print(f"\nData directory: {data_dir}")
+        print("These inputs of the paper's analysis are missing:")
+        for missing in inputs.missing:
+            print(f"  - {missing}")
+        choice = _ask(
+            "What would you like to do?",
+            [SETUP_CONTINUE, SETUP_CHANGE, SETUP_LAYOUT, SETUP_EXIT],
+        )
+        if choice == SETUP_CONTINUE:
+            return True
+        if choice == SETUP_CHANGE:
+            _set_data_dir()
+        elif choice == SETUP_LAYOUT:
+            _create_data_layout(data_dir)
+        else:
+            return False
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +341,8 @@ def check_paper_inputs(cfg=None):
         data_dir = get_data_dir()
     except OSError:
         result.missing.append(
-            "NESCAFE23_DATADIR is not set (set it in the workspace .env, e.g. with `nescafe23`)."
+            "NESCAFE23_DATADIR is not set (set it in the workspace .env; `n23_fluctuation_analysis` "
+            "without arguments prompts for it)."
         )
         return result
     if not data_dir.is_dir():

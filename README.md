@@ -101,8 +101,14 @@ in one directory with a fixed structure. Its location is set by
 NESCAFE23_DATADIR="/path/to/data/directory/"
 ```
 
-Running `uv run nescafe23` will also prompt for it if it is not set. To access
-the experiment data, please reach out to me (John Ragland) directly.
+You don't have to write it by hand: on start, `uv run n23_fluctuation_analysis`
+asks for the directory if it is not set, saves it to the `.env`, and lists any
+missing inputs (below). From there you can continue to the menu anyway, change
+the directory, or create the expected folder layout (`dmod/`,
+`environment_data/`, `dataproducts/`). The menu's "set data directory" entry
+changes it later. Saving the path rewrites only `NESCAFE23_DATADIR`; other
+variables in the `.env` are kept. To access the experiment data, please reach
+out to me (John Ragland) directly.
 
 ## Reproducing the paper
 

@@ -189,6 +189,12 @@ uv run n23_panel                  # (or nescafe23_panel) serves panel_apps/ dash
   the Fig. 5 caption numbers, the pattern report). Each step is decorated with `check_output_exists`, which
   takes `force_overwrite` (recompute) or `skip_existing` (reuse, no prompt; `--reuse`), and otherwise asks.
   The other menu entries run single steps with the paper settings, without asking for options.
+  Before the interactive menu, `ensure_setup()` handles a clean install. If `NESCAFE23_DATADIR` is unset, it
+  prompts for it via the base `nescafe23.cli._set_data_dir`, which writes only that key to the workspace `.env`
+  with `dotenv.set_key`. If the path is not a directory, it offers another path or to create it. Otherwise it
+  runs `check_paper_inputs()`, lists what is missing, and offers: continue anyway / change the directory /
+  create `DATA_LAYOUT` (`dmod/`, `environment_data/`, `dataproducts/`) / exit. `--reproduce-paper` skips it.
+  The menu also has "set data directory".
   `tools.PAPER_SETTINGS` (tilt removed, pattern `both`, Hann, first difference) is the single source of the
   paper's processing choices.
   **Not in the CLI** (exploratory, code kept): the φ/χ GM + noise fit (`tools.compute_phi_chi_LS_fit`), the GM
