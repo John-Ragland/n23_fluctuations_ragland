@@ -11,8 +11,10 @@ fitting, and wavefront/mean-pulse extraction from ray-traced eigenrays.
 This repo is a **git submodule** of the NESCAFE23 workspace, checked out at `projects/n23_fluctuations_ragland/`
 there. See the workspace root `CLAUDE.md` for the full cross-repo dependency graph.
 
-**Depends on:** `nescafe23` (no `acoustic_inversion` usage). `nesma_param` is an **optional** extra
-(`[nesma]`), imported lazily only by `theory_environments.nesma_beta0_environment`. Also depends directly on external `pygenray` (ray tracing, GitHub install) and `cmps` (colormap
+**Depends on:** `nescafe23` (no `acoustic_inversion` usage). `nesma_param` is deliberately **not** a declared
+dependency (not even an extra): it is private, and declaring it (`{ workspace = true }`) makes `uv sync` fail
+in a public clone where `packages/nesma_param` is not checked out. It is imported lazily only by
+`theory_environments.nesma_beta0_environment`, which works when the full workspace is synced (`--all-packages`). Also depends directly on external `pygenray` (ray tracing, GitHub install) and `cmps` (colormap
 package, GitHub install, used by the panel app).
 
 ## Commands

@@ -241,8 +241,9 @@ def nesma_beta0_environment(
         from nesma_param.jax_helpers import interp1d_linear
     except ImportError as err:
         msg = (
-            "nesma_beta0_environment needs nesma_param: install the optional extra "
-            "(`uv sync --all-packages`, or `pip install n23_fluctuations_ragland[nesma]`)"
+            "nesma_beta0_environment needs nesma_param, which is not a dependency of "
+            "n23_fluctuations_ragland (it is not public yet). Within the full NESCAFE23 "
+            "workspace, install it with `uv sync --all-packages`."
         )
         raise ImportError(msg) from err
 

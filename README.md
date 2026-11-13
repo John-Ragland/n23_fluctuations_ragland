@@ -40,44 +40,63 @@ this paper, as well as generating the figures for publication.
 
 ## Installation / Setup
 
-This package is a submodule to the parent package [NESCAFE23](https://github.com/John-Ragland/NESCAFE23)
-The package can be installed with pip via PyPI. The package is designed to run
-on python 3.13.
+This package is a git submodule of the
+[NESCAFE23](https://github.com/John-Ragland/NESCAFE23) workspace and is
+installed from there, because it depends on the workspace's base library
+`nescafe23`, which `uv` resolves from the workspace. Install
+[uv](https://docs.astral.sh/uv/) first. Then clone the workspace, check out
+this submodule, and sync:
 
 ```bash
-pip install NESCAFE23_fluctuations
+git clone https://github.com/John-Ragland/NESCAFE23.git
+cd NESCAFE23
+git submodule update --init projects/n23_fluctuations_ragland
+uv sync --package n23_fluctuations_ragland --all-groups
 ```
 
-If you want to edit the code, or open the notebooks easily, you can clone the
-repo from GitHub and install the package in editable mode
+Some of the workspace's other submodules are not public yet, so don't clone
+with `--recurse-submodules`: git would fail (or ask for GitHub credentials) on
+the private ones. Their folders stay empty, which `uv` ignores. Because they are
+missing, `uv sync` updates `uv.lock` to drop them; this is expected, and
+`--locked` will fail.
+
+This creates one virtual environment (`.venv` at the workspace root) with
+`nescafe23` and this package installed in editable mode, plus the test, dev
+and docs dependency groups. The workspace pins Python 3.13
+(`.python-version`), and `uv` downloads it if needed. The dependencies that are
+not on PyPI ([pygenray](https://github.com/John-Ragland/pygenray) and
+[cmps](https://github.com/John-Ragland/cmps)) are installed from GitHub
+automatically.
+
+Run the commands with `uv run` from anywhere in the workspace (e.g.
+`uv run n23_fluctuation_analysis`), or activate the environment with
+`source .venv/bin/activate`. Check the installation with
 
 ```bash
-git clone https:/www.github.com/John-Ragland/NESCAFE23_fluctuations.git
-cd NESCAFE23_fluctuations
-pip install -e .[dev]
-pre-commit install
+uv run pytest projects/n23_fluctuations_ragland/tests
 ```
 
-Outputs of the notebooks are stripped via `nbstripout` to keep the repo small.
-To enable this as a git filter, run the following command within the repo:
+Each submodule is its own git repository, so commit changes to this package
+from within `projects/n23_fluctuations_ragland/`.
+
+**Development.** Notebook outputs are stripped by `nbstripout` to keep the repo
+small, and ruff runs as a pre-commit hook. To enable both, run within `projects/n23_fluctuations_ragland/`:
 
 ```bash
-nbstripout --install
+uv run nbstripout --install
+uv run pre-commit install
 ```
 
-**Data** The raw data, intermediate data products, and final results are stored
-or saved in a uniform directory structure. The location that this directory is
-stored locally is specified in the .env file. To access the experiment data,
-please reach out to me (John Ragland) directly. When you run the CLI, it will
-ask you to specify the data directory path.
+**Data.** The raw data, intermediate data products, and final results are kept
+in one directory with a fixed structure. Its location is set by
+`NESCAFE23_DATADIR` in a `.env` file at the workspace root (see `.env.example`):
 
-**Dependencies** most of the dependencies are automatically installed via the
-pyproject.toml file. There are a few custom dependencies that are not on PyPI
-and need to be installed manually
+```bash
+NESCAFE23_DATADIR="/path/to/data/directory/"
+```
 
-| Package | Source | url                                  | version |
-| ------- | ------ | ------------------------------------ | ------- |
-| cmps    | GitHub | https://github.com/John-Ragland/cmps | 0.1     |
+Running `uv run nescafe23` will also prompt for it if it is not set. To access
+the experiment data, please reach out to me (John Ragland) directly.
 
 ## Reproducing the paper
 
