@@ -1,4 +1,26 @@
+"""
+``n23_fluctuation_analysis``: the analysis of the NESCAFE23 acoustic fluctuations paper.
+
+The menu holds only the analysis that is in the paper. Its first entry, "reproduce paper", runs every
+processing step, writes Table II and builds every publication figure in one go
+(also ``n23_fluctuation_analysis --reproduce-paper``). The remaining entries run the steps one at a time.
+
+The processing starts from the demodulated receptions (``$NESCAFE23_DATADIR/dmod/dm*.mat``), which are not
+public: they are available from the corresponding author on request. `check_paper_inputs` lists every input
+the reproduction needs.
+
+Exploratory analysis that is not in the paper (the GM + noise fit of the spectra, the GM levels table, the
+transmission independence test, the estimation experiments, the source geometry sweep, the theory
+environments) is not in this menu. Its code is in `tools`, `estimation` and `theory_environments`.
+"""
+
+import argparse
 import pickle
+import shutil
+import subprocess
+import time
+import traceback
+from dataclasses import dataclass, field
 from functools import wraps
 from pathlib import Path
 
@@ -6,26 +28,32 @@ import fsspec
 import matplotlib.pyplot as plt
 import nescafe23 as n23
 import numpy as np
-import pandas as pd
-import pygenray as pr
 import questionary
-import xarray as xr
 from nescafe23 import convert_to_xarray
 from nescafe23.data import get_data_dir
 from scipy import signal
 from tqdm import tqdm
 
-from n23_fluctuations_ragland import estimation, figures, tools
+from n23_fluctuations_ragland import __version__, figures, tools
+
+N_TRANSMISSIONS = 23
+
+DATA_ON_REQUEST = (
+    "The demodulated receptions (dmod/dm*.mat) are not public. They are available from the corresponding "
+    "author on reasonable request (see the paper's Data Availability statement)."
+)
 
 
 def check_output_exists(*output_paths):
     """
     Decorator to check if output file(s) exist and handle overwrite logic.
 
-    The decorated function must have a `force_overwrite` parameter (bool).
-    The decorator will check if the output file(s) exist and either:
-    - Skip the function if any file exists and user doesn't want to overwrite
-    - Run the function if no files exist or user wants to overwrite
+    The decorated function gets two keyword arguments:
+
+    - ``force_overwrite`` (default False): run even if the output exists;
+    - ``skip_existing`` (default False): if any output exists, reuse it and skip the function without asking.
+
+    With neither set and an existing output, the user is asked whether to overwrite it.
 
     Parameters
     ----------
@@ -36,7 +64,7 @@ def check_output_exists(*output_paths):
 
     def decorator(func):
         @wraps(func)
-        def wrapper(*args, force_overwrite=False, **kwargs):
+        def wrapper(*args, force_overwrite=False, skip_existing=False, **kwargs):
             filepaths = []
             for output_path in output_paths:
                 if callable(output_path):
@@ -48,6 +76,10 @@ def check_output_exists(*output_paths):
             existing_files = [fp for fp in filepaths if fp.exists()]
 
             if not force_overwrite and existing_files:
+                if skip_existing:
+                    print(f"Skipping {func.__name__}: reusing existing output.")
+                    return None
+
                 files_list = "\n".join(str(fp) for fp in existing_files)
                 prompt_message = f"Output file(s) already exist:\n{files_list}\nDo you want to overwrite them?"
                 should_proceed = questionary.confirm(
@@ -65,43 +97,82 @@ def check_output_exists(*output_paths):
     return decorator
 
 
-def main():
-    """Interactive CLI menu."""
+MENU_REPRODUCE = "reproduce paper (all analysis, Table II and figures)"
+MENU_CHOICES = (
+    MENU_REPRODUCE,
+    "compute arrival time offset",
+    "estimate arrival time offset error",
+    "compute mean pulse",
+    "estimate peak locations",
+    "estimate array tilt",
+    "compute wavefront values and hydrophone pattern",
+    "compute rays",
+    "Table II: vertical coherence lengths",
+    "create publication figures config",
+    "generate publication figures",
+    "exit",
+)
+
+
+def _parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="n23_fluctuation_analysis",
+        description=(
+            "Analysis of the NESCAFE23 acoustic fluctuations paper. Without arguments, an interactive menu."
+        ),
+    )
+    parser.add_argument(
+        "--reproduce-paper",
+        action="store_true",
+        help="run all the paper's analysis, write Table II and build every figure, without prompts",
+    )
+    parser.add_argument(
+        "--output",
+        default="paper_output",
+        help="directory for Table II, the figures and the report (default: paper_output)",
+    )
+    parser.add_argument(
+        "--reuse",
+        action="store_true",
+        help="reuse existing data products instead of recomputing them",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    """Interactive CLI menu, or ``--reproduce-paper`` without prompts. Returns the exit code."""
+    args = _parse_args(argv)
+    if args.reproduce_paper:
+        return 0 if reproduce_paper(args.output, reuse=args.reuse) else 1
+
     try:
         get_data_dir()
     except OSError:
         print("\nNESCAFE23_DATADIR is not set.")
         print("Run 'nescafe23-init' to configure the data directory, then try again.")
-        return
+        return 1
 
     choice = questionary.select(
-        "Which script would you like to run?",
-        choices=[
-            "run all processing",
-            "compute arrival time offset",
-            "estimate arrival time offset error",
-            "compute mean pulse",
-            "estimate peak locations",
-            "estimate array tilt",
-            "compute wavefront values",
-            "estimate hydrophone pattern",
-            "compute rays",
-            "source geometry sweep",
-            "ɸ χ GM least squares fit",
-            "coherence lengths (observed vs. GM)",
-            "GM levels (spectra vs. coherence)",
-            "transmission independence test",
-            "create estimation experiments config",
-            "run estimation experiments",
-            "create publication figures config",
-            "generate publication figures",
-            "exit",
-        ],
+        "Which script would you like to run?", choices=list(MENU_CHOICES)
     ).ask()
 
-    if choice == "run all processing":
-        run_all_processing()
-    elif choice == "compute arrival time offset":
+    if choice == MENU_REPRODUCE:
+        output_dir = questionary.path(
+            "Output directory for Table II, the figures and the report:",
+            default="paper_output",
+        ).ask()
+        if not output_dir:
+            return 1
+        reuse = (
+            questionary.select(
+                "Existing data products:",
+                choices=["recompute everything", "reuse existing data products"],
+                default="recompute everything",
+            ).ask()
+            == "reuse existing data products"
+        )
+        return 0 if reproduce_paper(output_dir, reuse=reuse) else 1
+    if choice == "compute arrival time offset":
         compute_arrival_time_offset()
     elif choice == "estimate arrival time offset error":
         estimate_arrival_time_offset_error()
@@ -111,102 +182,283 @@ def main():
         estimate_peak_locations()
     elif choice == "estimate array tilt":
         estimate_array_tilt()
-    elif choice == "compute wavefront values":
-        get_wavefront_values()
-    elif choice == "estimate hydrophone pattern":
-        estimate_hydrophone_pattern()
+    elif choice == "compute wavefront values and hydrophone pattern":
+        compute_wavefront_values_and_pattern()
     elif choice == "compute rays":
         compute_rays()
-    elif choice == "source geometry sweep":
-        source_geometry_sweep()
-    elif choice == "ɸ χ GM least squares fit":
-        phi_chi_LS_fit()
-    elif choice == "coherence lengths (observed vs. GM)":
+    elif choice == "Table II: vertical coherence lengths":
         coherence_lengths()
-    elif choice == "GM levels (spectra vs. coherence)":
-        gm_levels()
-    elif choice == "transmission independence test":
-        independence_test()
-    elif choice == "create estimation experiments config":
-        create_estimation_experiments_config()
-    elif choice == "run estimation experiments":
-        run_estimation_experiments()
     elif choice == "create publication figures config":
         create_publication_figures_config()
     elif choice == "generate publication figures":
         generate_publication_figures()
     elif choice == "exit":
         print("Goodbye!")
-        return
+    return 0
 
 
-def run_all_processing():
-    """Run all processing steps in sequence."""
-    print("=" * 60)
-    print("Running all processing steps...")
-    print("=" * 60)
+# ---------------------------------------------------------------------------
+# One-click reproduction
+# ---------------------------------------------------------------------------
 
-    overwrite_all = questionary.confirm(
-        "Overwrite existing data products if they exist?", default=False
-    ).ask()
 
-    processing_steps = [
-        ("Step 1: Computing arrival time offset", compute_arrival_time_offset, {}),
+@dataclass
+class PaperInputs:
+    """Outcome of `check_paper_inputs`: missing required inputs, and warnings that don't stop the run."""
+
+    missing: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    has_latex: bool = True
+
+    @property
+    def ok(self):
+        return not self.missing
+
+
+def check_paper_inputs(cfg=None):
+    """
+    Check that every input of the paper's analysis is present, before anything is computed.
+
+    Required: ``NESCAFE23_DATADIR``; the 23 receptions ``dmod/dm*.mat``; under ``environment_data/`` the FCTD
+    section, the SION and SIOE CTD casts, and the map bathymetry and SSH files (`figures.map_input_paths`).
+    Warnings: a missing map font (the default font is used), and no ``latex`` on the PATH (the figures are then
+    built with ``usetex: false``).
+
+    Parameters
+    ----------
+    cfg : figures.PublicationFiguresConfig, optional
+        config whose map inputs are checked. Default is the default (paper) config.
+    """
+    result = PaperInputs()
+    try:
+        data_dir = get_data_dir()
+    except OSError:
+        result.missing.append(
+            "NESCAFE23_DATADIR is not set (set it in the workspace .env, e.g. with `nescafe23`)."
+        )
+        return result
+    if not data_dir.is_dir():
+        result.missing.append(f"NESCAFE23_DATADIR {data_dir} is not a directory.")
+        return result
+
+    dmod = sorted((data_dir / "dmod").glob("dm*.mat"))
+    if len(dmod) != N_TRANSMISSIONS:
+        result.missing.append(
+            f"{data_dir / 'dmod' / 'dm*.mat'}: expected {N_TRANSMISSIONS} receptions, found {len(dmod)}. "
+            + DATA_ON_REQUEST
+        )
+
+    cfg = cfg or figures.PublicationFiguresConfig()
+    environment = data_dir / "environment_data"
+    map_paths = figures.map_input_paths(cfg)
+    required = {
+        "FCTD section": environment / "FCTD_SoundSpeed_Colosi_v2.mat",
+        "SION CTD cast": environment / "SION_CTD_new.mat",
+        "SIOE CTD cast": environment / "SIOE_CTD.mat",
+        "map bathymetry": map_paths["bathymetry"],
+        "sea surface height": map_paths["ssh"],
+    }
+    for name, path in required.items():
+        if not path.exists():
+            result.missing.append(f"{name}: {path}")
+
+    if not map_paths["font"].exists():
+        result.warnings.append(
+            f"map font {map_paths['font']} not found; the Map uses the default font."
+        )
+    result.has_latex = shutil.which("latex") is not None
+    if not result.has_latex:
+        result.warnings.append(
+            "latex not found on the PATH; the figures are built with usetex: false."
+        )
+    return result
+
+
+def _git_commit():
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).parent,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=Path(__file__).parent,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    return out.stdout.strip() + (" (uncommitted changes)" if dirty else "")
+
+
+def _load_dataproduct(name):
+    path = get_data_dir() / "dataproducts" / name
+    if not path.exists():
+        return None
+    with path.open("rb") as f:
+        return pickle.load(f)
+
+
+def paper_steps(output_dir):
+    """The paper's analysis, in order, as ``(name, function)``. Each function takes the overwrite keywords of
+    `check_output_exists` (``force_overwrite``, ``skip_existing``); Table II and the figures always rerun."""
+    output_dir = Path(output_dir)
+
+    def table_ii(**_):
+        coherence_lengths(output_path=output_dir / "table_II.tex")
+
+    def publication_figures(**_):
+        build_paper_figures(output_dir / "figures")
+
+    return [
+        ("arrival time offset", compute_arrival_time_offset),
+        ("arrival time offset error (jackknife)", estimate_arrival_time_offset_error),
+        ("mean pulse", compute_mean_pulse),
+        ("peak locations", estimate_peak_locations),
+        ("array tilt", estimate_array_tilt),
         (
-            "Step 1b: Estimating arrival time offset error (jackknife, ~1 min)",
-            estimate_arrival_time_offset_error,
-            {},
+            "wavefront values and hydrophone pattern",
+            compute_wavefront_values_and_pattern,
         ),
-        ("Step 2: Estimating peak locations", estimate_peak_locations, {}),
-        ("Step 3: Estimating array tilt", estimate_array_tilt, {}),
-        (
-            "Step 4: Computing wavefront values",
-            get_wavefront_values,
-            {"remove_array_tilt": False, "remove_pattern": "none"},
-        ),
-        (
-            "Step 5: Computing wavefront values (array tilt removed)",
-            get_wavefront_values,
-            {"remove_array_tilt": True, "remove_pattern": "none"},
-        ),
-        ("Step 6: Computing mean pulse", compute_mean_pulse, {}),
-        ("Step 7: Computing rays", compute_rays, {}),
-        ("Step 8: Source geometry sweep", source_geometry_sweep, {}),
-        (
-            "Step 9: ɸ χ GM least squares fit",
-            phi_chi_LS_fit,
-            {
-                "remove_array_tilt": False,
-                "remove_pattern": "none",
-                "window": "hann",
-                "first_difference": False,
-            },
-        ),
-        (
-            "Step 10: ɸ χ GM least squares fit (array tilt removed)",
-            phi_chi_LS_fit,
-            {
-                "remove_array_tilt": True,
-                "remove_pattern": "none",
-                "window": "hann",
-                "first_difference": False,
-            },
-        ),
+        ("rays", compute_rays),
+        ("Table II", table_ii),
+        ("publication figures", publication_figures),
     ]
 
-    for step_name, step_func, step_kwargs in processing_steps:
-        print(f"\n{'=' * 60}")
-        print(f"{step_name}")
-        print(f"{'=' * 60}")
+
+def build_paper_figures(output_dir, usetex=None):
+    """Build every publication figure with the default (paper) config into ``output_dir``. Raises if any figure
+    fails. ``usetex`` defaults to whether ``latex`` is on the PATH."""
+    if usetex is None:
+        usetex = shutil.which("latex") is not None
+    cfg = figures.PublicationFiguresConfig(output_dir=Path(output_dir), usetex=usetex)
+    figures.clear_cache()
+    build = figures.generate_publication_figures(
+        cfg, progress=lambda name: print(f"  building {name} ...")
+    )
+    for path in build.written:
+        print(f"✓ wrote {path}")
+    if build.failed:
+        details = "\n".join(f"{name}:\n{tb}" for name, tb in build.failed.items())
+        msg = f"{len(build.failed)} of {len(cfg.which)} figure(s) failed:\n{details}"
+        raise RuntimeError(msg)
+    return build
+
+
+def reproduce_paper(output_dir="paper_output", reuse=False, steps=None):
+    """
+    Reproduce the paper: every processing step, Table II and every publication figure, without prompts.
+
+    The inputs are checked first (`check_paper_inputs`); if any is missing, nothing is run. The steps
+    (`paper_steps`) then run in order and stop at the first failure, since each one needs the products of
+    the previous ones. The data products go to ``$NESCAFE23_DATADIR/dataproducts`` as usual; Table II
+    (``table_II.tex``), the figures (``figures/``) and a report (``reproduction_report.txt``) go to
+    ``output_dir``.
+
+    Parameters
+    ----------
+    output_dir : str or Path
+        directory for Table II, the figures and the report
+    reuse : bool
+        if True, existing data products are reused; otherwise every product is recomputed
+    steps : list of (str, callable), optional
+        the steps to run. Default is `paper_steps` (for tests).
+
+    Returns
+    -------
+    success : bool
+    """
+    output_dir = Path(output_dir).expanduser()
+    print("=" * 60)
+    print("Reproducing the NESCAFE23 acoustic fluctuations paper")
+    print("=" * 60)
+
+    inputs = check_paper_inputs()
+    for warning in inputs.warnings:
+        print(f"! {warning}")
+    if not inputs.ok:
+        print("\nCannot reproduce the paper; these inputs are missing:")
+        for item in inputs.missing:
+            print(f"  ✗ {item}")
+        return False
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if steps is None:
+        steps = paper_steps(output_dir)
+    overwrite = {"skip_existing": True} if reuse else {"force_overwrite": True}
+
+    status = []
+    success = True
+    for k, (name, func) in enumerate(steps, start=1):
+        print(f"\n{'=' * 60}\nStep {k}/{len(steps)}: {name}\n{'=' * 60}")
+        start = time.perf_counter()
         try:
-            step_func(force_overwrite=overwrite_all, **step_kwargs)
-            print(f"✓ {step_name} completed successfully")
-        except Exception as e:
-            print(f"✗ Error in {step_name}: {e!s}")
-            if not questionary.confirm(
-                "Continue with remaining steps?", default=True
-            ).ask():
-                raise
+            func(**overwrite)
+        except Exception:
+            elapsed = time.perf_counter() - start
+            tb = traceback.format_exc()
+            print(f"✗ {name} failed after {elapsed:.0f} s:\n{tb}")
+            status.append((name, "FAILED", elapsed, tb))
+            success = False
+            break
+        elapsed = time.perf_counter() - start
+        print(f"✓ {name} ({elapsed:.0f} s)")
+        status.append((name, "ok", elapsed, None))
+
+    report = reproduction_report(status, steps, reuse, inputs)
+    report_path = output_dir / "reproduction_report.txt"
+    report_path.write_text(report)
+    print(f"\n{report}\nWrote {report_path}")
+    return success
+
+
+def reproduction_report(status, steps, reuse, inputs):
+    """Text report of a `reproduce_paper` run: versions, settings, step status and times, and the numbers the
+    paper quotes from the data products (the Fig. 5 caption's arrival time offset errors)."""
+    lines = [
+        "NESCAFE23 acoustic fluctuations: paper reproduction report",
+        f"date: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"n23_fluctuations_ragland {__version__}, commit {_git_commit()}",
+        f"NESCAFE23_DATADIR: {get_data_dir()}",
+        f"data products: {'reused where present' if reuse else 'recomputed'}",
+        f"settings (tools.PAPER_SETTINGS): {tools.PAPER_SETTINGS}",
+        f"figures usetex: {inputs.has_latex}",
+        *(f"warning: {w}" for w in inputs.warnings),
+        "",
+        "steps:",
+    ]
+    for name, state, elapsed, _ in status:
+        lines.append(f"  {state:>6}  {name} ({elapsed:.0f} s)")
+    for name, _ in steps[len(status) :]:
+        lines.append(f"  {'-':>6}  {name} (not run)")
+    for name, state, _, tb in status:
+        if state == "FAILED":
+            lines += ["", f"{name} failed:", tb]
+
+    offset = _load_dataproduct("T_t_jackknife.pkl")
+    if offset is not None:
+        lines += [
+            "",
+            "Fig. 5 caption:",
+            "  " + arrival_time_offset_error_report(offset),
+        ]
+    pattern = _load_dataproduct("hydrophone_pattern.pkl")
+    if pattern is not None:
+        lines += [
+            "",
+            "hydrophone pattern (Fig. 5b):",
+            hydrophone_pattern_report(pattern),
+        ]
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Processing steps
+# ---------------------------------------------------------------------------
 
 
 @check_output_exists(lambda: get_data_dir() / "dataproducts" / "T_t_estimated.pkl")
@@ -370,10 +622,6 @@ def estimate_peak_locations():
         pickle.dump(peak_locations, f)
 
 
-def _ask_remove_array_tilt():
-    return questionary.confirm("Remove array tilt?", default=True).ask()
-
-
 @check_output_exists(lambda: get_data_dir() / "dataproducts" / "array_tilt.pkl")
 def estimate_array_tilt():
     """
@@ -386,69 +634,41 @@ def estimate_array_tilt():
         pickle.dump(array_tilt, f)
 
 
-def _ask_remove_pattern():
-    return questionary.select(
-        "Remove hydrophone pattern?",
-        choices=list(tools.REMOVE_PATTERN_CHOICES),
-        default="none",
-    ).ask()
-
-
-def _ask_spectral_method(window=None, first_difference=None):
-    """Ask for the spectral estimation method of `tools.estimate_F_phi_chi`, for the choices that are None."""
-    if window is None:
-        window = questionary.select(
-            f"Taper window? (tukey: alpha = {tools.TUKEY_ALPHA})",
-            choices=list(tools.SPECTRAL_WINDOWS),
-            default="hann",
-        ).ask()
-    if first_difference is None:
-        first_difference = questionary.confirm(
-            "First difference + postcolor?", default=False
-        ).ask()
-    return window, first_difference
-
-
-def _wavefront_values_path(remove_array_tilt, remove_pattern="none"):
-    return tools.wavefront_values_path(remove_array_tilt, remove_pattern)
-
-
-def get_wavefront_values(
-    remove_array_tilt=None, remove_pattern=None, force_overwrite=False
-):
+def compute_wavefront_values_and_pattern(force_overwrite=False, skip_existing=False):
     """
-    Given the estimated peak locations, extract the complex pressure values of the wavefront at these time locations.
+    The paper's wavefront values, in the order they depend on each other:
 
-    With the array tilt removed, each ray is beamformed at its mean angle plus the array tilt and the
-    result is written to ``wavefront_values_tilt_removed.pkl`` instead of ``wavefront_values.pkl``.
-    With a hydrophone pattern removed (``phase``, ``magnitude`` or ``both``, from "estimate hydrophone
-    pattern"), it is removed from the receptions before beamforming and the file name gets
-    ``_phase_removed``, ``_magnitude_removed`` or ``_phase_magnitude_removed``. The user is asked whether
-    to remove the tilt and the pattern when `remove_array_tilt` and `remove_pattern` are None.
+    1. wavefront values with the array tilt removed (``wavefront_values_tilt_removed.pkl``), from which
+    2. the hydrophone pattern is estimated (``hydrophone_pattern.pkl``), which is removed (phase and
+       magnitude) from the receptions before beamforming the
+    3. wavefront values the paper analyzes (`tools.PAPER_SETTINGS`,
+       ``wavefront_values_tilt_removed_phase_magnitude_removed.pkl``).
     """
-    if remove_array_tilt is None:
-        remove_array_tilt = _ask_remove_array_tilt()
-    if remove_pattern is None:
-        remove_pattern = _ask_remove_pattern()
+    overwrite = {"force_overwrite": force_overwrite, "skip_existing": skip_existing}
     _compute_wavefront_values(
-        remove_array_tilt=remove_array_tilt,
-        remove_pattern=remove_pattern,
-        force_overwrite=force_overwrite,
+        remove_array_tilt=True, remove_pattern="none", **overwrite
+    )
+    estimate_hydrophone_pattern(**overwrite)
+    _compute_wavefront_values(
+        remove_array_tilt=tools.PAPER_SETTINGS["remove_array_tilt"],
+        remove_pattern=tools.PAPER_SETTINGS["remove_pattern"],
+        **overwrite,
     )
 
 
 @check_output_exists(
-    lambda remove_array_tilt, remove_pattern: _wavefront_values_path(
+    lambda remove_array_tilt, remove_pattern: tools.wavefront_values_path(
         remove_array_tilt, remove_pattern
     )
 )
 def _compute_wavefront_values(remove_array_tilt, remove_pattern):
+    """Extract the complex pressure of each arrival's wavefront at its picked time (`tools.get_wavefront_values`)."""
     dss = tools.open_receptions()
     wavefront_values = tools.get_wavefront_values(
         dss, remove_array_tilt=remove_array_tilt, remove_pattern=remove_pattern
     )
 
-    with _wavefront_values_path(remove_array_tilt, remove_pattern).open("wb") as f:
+    with tools.wavefront_values_path(remove_array_tilt, remove_pattern).open("wb") as f:
         pickle.dump(wavefront_values, f)
 
 
@@ -571,98 +791,6 @@ def compute_rays():
         pickle.dump(ray_data, f)
 
 
-@check_output_exists(lambda: get_data_dir() / "dataproducts" / "ray_geo_sweep.pkl")
-def source_geometry_sweep():
-    """
-    Do a sweep of source depth and range to match the observed ducted section of the wavefront to rays through the FCTD.
-    """
-    data_dir = get_data_dir()
-    dss = tools.open_receptions()
-    lower_array_depth = [float(dss[k].actual_depth[32:].mean()) for k in range(23)]
-    Z_lower_array = np.mean(lower_array_depth)
-
-    fctd = tools.compute_filtered_fctd_grid(z_smooth=500, r_smooth=10000)
-    front_location = 35e3  # m
-    fctd = fctd.assign_coords({"range": (fctd.range.to_numpy() + front_location)})
-
-    c = fctd["c"]
-    bathy = xr.DataArray(
-        np.linspace(4908, 4908, 100),
-        dims=["range"],
-        coords={"range": np.linspace(0, 200e3, 100)},
-    )
-    envi = pr.OceanEnvironment2D(sound_speed=c, bathymetry=bathy)
-
-    source_depths = np.array(
-        [
-            2000,
-            2050,
-            2100,
-            2150,
-            2200,
-            2250,
-            2300,
-            2350,
-            2400,
-        ]
-    ).astype(float)
-    receiver_ranges = np.array(
-        [
-            148e3,
-            149e3,
-            150e3,
-            151e3,
-            152e3,
-            153e3,
-            154e3,
-            155e3,
-        ]
-    ).astype(float)
-
-    ssource_depths, rreceiver_ranges = np.meshgrid(source_depths, receiver_ranges)
-    ssource_depths = ssource_depths.flatten()
-    rreceiver_ranges = rreceiver_ranges.flatten()
-
-    rays = []
-    eigs = []
-
-    for k in range(len(ssource_depths)):
-        source_depth = ssource_depths[k]
-        receiver_range = rreceiver_ranges[k]
-        print(
-            f"Run {k + 1}/{len(ssource_depths)}, zs = {source_depth}[m], r={receiver_range / 1000} [km]..."
-        )
-
-        rays.append(
-            pr.shoot_rays(
-                source_depth, 0, np.linspace(-35, 35, 1001), receiver_range, 1000, envi
-            )
-        )
-        eigs.append(
-            pr.find_eigenrays(
-                rays[k],
-                [float(Z_lower_array)],
-                source_depth,
-                0,
-                receiver_range,
-                1000,
-                envi,
-            )
-        )
-
-    with (data_dir / "dataproducts" / "ray_geo_sweep.pkl").open("wb") as f:
-        pickle.dump(
-            {
-                "source_depths": ssource_depths,
-                "receiver_ranges": rreceiver_ranges,
-                "rays": rays,
-                "eigs": eigs,
-                "envi": envi,
-            },
-            f,
-        )
-
-
 def serve_panel_apps():
     """Serve Panel apps from the panel_apps directory."""
     import subprocess
@@ -707,82 +835,26 @@ def compute_mean_pulse():
     )
 
 
-def phi_chi_LS_fit(
-    remove_array_tilt=None,
-    remove_pattern=None,
-    window=None,
-    first_difference=None,
-    force_overwrite=False,
-):
+def coherence_lengths(output_path=None):
     """
-    Fit the GM energy and observational noise levels to the observed ɸ and χ spectra.
-
-    The spectra are estimated from ``wavefront_values_tilt_removed.pkl`` with the array tilt removed
-    and the fit is written to ``phi_chi_LS_fit_tilt_removed.pkl``, otherwise from
-    ``wavefront_values.pkl`` to ``phi_chi_LS_fit.pkl``. A removed hydrophone pattern adds the same
-    suffix to both (`tools.wavefront_values_path`). The spectral estimation method (`window`, one of
-    `tools.SPECTRAL_WINDOWS`, and `first_difference`, see `tools.estimate_F_phi_chi`) adds its own suffix
-    to the fit unless it is the default Hann window without first differencing (`tools.phi_chi_LS_fit_path`). The user is asked for
-    each of these choices that is None.
-    """
-    if remove_array_tilt is None:
-        remove_array_tilt = _ask_remove_array_tilt()
-    if remove_pattern is None:
-        remove_pattern = _ask_remove_pattern()
-    window, first_difference = _ask_spectral_method(window, first_difference)
-    _compute_phi_chi_LS_fit(
-        remove_array_tilt=remove_array_tilt,
-        remove_pattern=remove_pattern,
-        window=window,
-        first_difference=first_difference,
-        force_overwrite=force_overwrite,
-    )
-
-
-@check_output_exists(
-    lambda remove_array_tilt, remove_pattern, window, first_difference: (
-        tools.phi_chi_LS_fit_path(
-            remove_array_tilt, remove_pattern, window, first_difference
-        )
-    )
-)
-def _compute_phi_chi_LS_fit(
-    remove_array_tilt, remove_pattern, window, first_difference
-):
-    m_data, _, _, F_phi_lm, F_phi_ls, F_chi_lm, F_chi_ls = tools.estimate_F_phi_chi(
-        remove_array_tilt=remove_array_tilt,
-        remove_pattern=remove_pattern,
-        window=window,
-        first_difference=first_difference,
-    )
-    results = tools.fit_F_phi_chis(m_data, F_phi_lm, F_chi_lm, F_phi_ls, F_chi_ls)
-
-    path = tools.phi_chi_LS_fit_path(
-        remove_array_tilt, remove_pattern, window, first_difference
-    )
-    with path.open("wb") as f:
-        pickle.dump(results, f)
-
-
-def coherence_lengths(remove_array_tilt=None, remove_pattern=None):
-    """
-    Print a LaTeX table of the observed (Gaussian fit to the mutual coherence) and theoretical (1GM path
-    integral) vertical coherence lengths and coherence times for each ray.
+    Table II: print a LaTeX table of the observed (Gaussian fit to the mutual coherence) and predicted (1GM path
+    integral) vertical coherence lengths, and the observed fit amplitude A0, for the ducted rays, from the
+    paper's wavefront values (`tools.PAPER_SETTINGS`).
 
     The observed z0 is fitted to the nonzero lags of the unnormalized mutual coherence, as in the
     Ducted_VC figure, and reported ± its leave-one-transmission-out jackknife standard deviation
     (`tools.jackknife_vertical_coherence`). Only the ducted rays (`tools.DUCTED_RAY_IDS`) are fitted: the
     fit raises on rays such as ``-6b`` whose coherence is negative at the first nonzero lag.
 
-    The user is asked whether to use the wavefront values with the array tilt and the hydrophone pattern
-    removed when `remove_array_tilt` and `remove_pattern` are None.
+    Parameters
+    ----------
+    output_path : str or Path, optional
+        if given, the table is also written there
     """
-    if remove_array_tilt is None:
-        remove_array_tilt = _ask_remove_array_tilt()
-    if remove_pattern is None:
-        remove_pattern = _ask_remove_pattern()
-
-    wavefront_values = _load_wavefront_values(remove_array_tilt, remove_pattern)
+    wavefront_values = _load_wavefront_values(
+        tools.PAPER_SETTINGS["remove_array_tilt"],
+        tools.PAPER_SETTINGS["remove_pattern"],
+    )
 
     print("Estimating observed coherence lengths...")
     observed = tools.estimate_observed_coherence_lengths(
@@ -795,64 +867,11 @@ def coherence_lengths(remove_array_tilt=None, remove_pattern=None):
     print("=" * 60)
     print(table)
     print("=" * 60)
-    return table
-
-
-def gm_levels(
-    remove_array_tilt=None, remove_pattern=None, window=None, first_difference=None
-):
-    """
-    Print a LaTeX table of the GM energy levels fitted to the observed ɸ and χ spectra (WFT) and to the
-    vertical coherence (path integral), ± their jackknife standard errors.
-
-    The spectral level is read from ``phi_chi_LS_fit[_tilt_removed].pkl`` of the "ɸ χ GM least
-    squares fit" step (shown as -- if it has not been made), and its standard error is the linearized
-    jackknife `tools.jackknife_F_phi_chi_fit`. The coherence level is fitted here
-    (`tools.fit_GM_vertical_coherence`), to D = -2 ln VC of the same wavefront values.
-
-    The user is asked whether to use the wavefront values with the array tilt and the hydrophone pattern
-    removed, and for the spectral estimation method of the fit (`window`, `first_difference`), for each of
-    these choices that is None.
-    """
-    if remove_array_tilt is None:
-        remove_array_tilt = _ask_remove_array_tilt()
-    if remove_pattern is None:
-        remove_pattern = _ask_remove_pattern()
-    window, first_difference = _ask_spectral_method(window, first_difference)
-
-    wavefront_values = _load_wavefront_values(remove_array_tilt, remove_pattern)
-
-    path = tools.phi_chi_LS_fit_path(
-        remove_array_tilt, remove_pattern, window, first_difference
-    )
-    if path.exists():
-        with path.open("rb") as f:
-            results = pickle.load(f)
-        print("Jackknifing the ɸ χ GM fit...")
-        m_data, F_phi_data, F_chi_data, _, F_phi_ls, _, F_chi_ls = (
-            tools.estimate_F_phi_chi(
-                remove_array_tilt=remove_array_tilt,
-                remove_pattern=remove_pattern,
-                window=window,
-                first_difference=first_difference,
-            )
-        )
-        spectral = tools.jackknife_F_phi_chi_fit(
-            results, m_data, F_phi_data, F_chi_data, F_phi_ls, F_chi_ls
-        )
-    else:
-        print(
-            f"{path.name} not found; run 'ɸ χ GM least squares fit' to fill that column."
-        )
-        spectral = None
-
-    print("Fitting GM to the vertical coherence...")
-    coherence = tools.fit_GM_vertical_coherence(wavefront_values)
-
-    table = tools.GM_levels_latex_table(spectral, coherence)
-    print("=" * 60)
-    print(table)
-    print("=" * 60)
+    if output_path is not None:
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(table + "\n")
+        print(f"Wrote {output_path}")
     return table
 
 
@@ -867,134 +886,10 @@ def _load_wavefront_values(remove_array_tilt, remove_pattern="none"):
         mode = f" ({', '.join(removed)} removed)" if removed else ""
         raise FileNotFoundError(
             f"Wavefront values{mode} not found at {wavefront_values_path}. "
-            "Please run 'compute wavefront values' first."
+            "Please run 'compute wavefront values and hydrophone pattern' first."
         )
     with wavefront_values_path.open("rb") as f:
         return pickle.load(f)
-
-
-def independence_test(
-    remove_array_tilt=None, remove_pattern=None, window=None, first_difference=None
-):
-    """
-    Print the transmission independence test (lag-1 autocorrelation of the per-transmission estimates over the
-    hourly transmissions) for the ɸ and χ spectra and for the vertical coherence, the assumption of their
-    jackknife error bars.
-
-    The user is asked whether to use the wavefront values with the array tilt and the hydrophone pattern
-    removed, and for the spectral estimation method of the spectra (`window`, `first_difference`), for each of
-    these choices that is None.
-    """
-    if remove_array_tilt is None:
-        remove_array_tilt = _ask_remove_array_tilt()
-    if remove_pattern is None:
-        remove_pattern = _ask_remove_pattern()
-    window, first_difference = _ask_spectral_method(window, first_difference)
-
-    wavefront_values = _load_wavefront_values(remove_array_tilt, remove_pattern)
-
-    print("Testing the ɸ and χ spectra...")
-    F_results = tools.independence_test_F_phi_chi(
-        remove_array_tilt=remove_array_tilt,
-        remove_pattern=remove_pattern,
-        window=window,
-        first_difference=first_difference,
-    )
-    print("Testing the vertical coherence...")
-    vc_result = tools.independence_test_vertical_coherence(wavefront_values)
-
-    sections = [
-        ("F_phi: log10 periodogram, all wavenumbers", F_results["phi"]),
-        ("F_chi: log10 periodogram, all wavenumbers", F_results["chi"]),
-        ("vertical coherence: R_k(dz), dz <= 180 m", vc_result),
-    ]
-    lines = []
-    for title, result in sections:
-        pooled = result["pooled"]
-        per_ray = ", ".join(
-            f"{ray_id} {r1:+.2f}" for ray_id, r1 in result["per_ray"].items()
-        )
-        lines += [
-            title,
-            f"  mean lag-1 autocorrelation per ray: {per_ray}",
-            (
-                f"  pooled mean r1 = {pooled['mean_r1']:+.3f} (uncorrelated: {pooled['null_mean']:+.3f}), "
-                f"|r1| > {pooled['band']:.2f}: {pooled['n_outside']}/{len(pooled['r1'])}, "
-                f"permutation p = {pooled['p']:.2f}"
-            ),
-        ]
-
-    report = "\n".join(lines)
-    print("=" * 60)
-    print(report)
-    print("=" * 60)
-    return report
-
-
-def create_estimation_experiments_config():
-    """Write the estimation experiments config template to a path chosen by the user."""
-    answer = questionary.path(
-        "Where should the config be written?", default="estimation_experiments.yaml"
-    ).ask()
-    if not answer:
-        return None
-
-    dest = Path(answer).expanduser()
-    if dest.is_dir():
-        dest = dest / "estimation_experiments.yaml"
-    if (
-        dest.exists()
-        and not questionary.confirm(
-            f"{dest} already exists. Overwrite it?", default=False
-        ).ask()
-    ):
-        print(f"Kept existing {dest}.")
-        return dest
-
-    estimation.write_config_template(dest, overwrite=True)
-    print(f"Wrote {dest}. Edit it, then run 'run estimation experiments'.")
-    return dest
-
-
-def run_estimation_experiments():
-    """Run the F_phi / F_chi estimation experiments described by a config file."""
-    answer = questionary.path(
-        "Estimation experiments config:", default="estimation_experiments.yaml"
-    ).ask()
-    if not answer:
-        return None
-
-    try:
-        cfg = estimation.load_config(answer)
-    except (estimation.ConfigError, FileNotFoundError) as e:
-        print(f"Configuration error: {e}")
-        return None
-
-    print(f"Writing results to {cfg.output_dir}")
-    result = estimation.run_experiment(cfg, progress=lambda msg: print(f"  {msg}"))
-
-    with pd.option_context("display.width", 200, "display.max_columns", 20):
-        if result.fits:
-            print(
-                estimation.fit_table(result)[
-                    ["estimator", "ray_id", "GM", "GM_se", "phi_noise", "chi_noise"]
-                ].to_string(index=False, float_format="%.3g")
-            )
-        if result.synthetic is not None:
-            print(
-                estimation.synthetic_table(result)[
-                    [
-                        "estimator",
-                        "ray_id",
-                        "GM_ratio_median",
-                        "phi_bias_rms_decades",
-                        "chi_bias_rms_decades",
-                    ]
-                ].to_string(index=False, float_format="%.3g")
-            )
-    for path in result.written:
-        print(f"✓ wrote {path}")
-    return result
 
 
 def create_publication_figures_config():

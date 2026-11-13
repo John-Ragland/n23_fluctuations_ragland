@@ -80,11 +80,13 @@ def test_dilation_is_not_a_config_key(tmp_path):
 def test_wavefront_values_follow_remove_array_tilt(monkeypatch, tmp_path):
     monkeypatch.setattr(figures.tools, "get_data_dir", lambda: tmp_path)
     monkeypatch.setattr(figures, "_wavefront_values", lambda name: name)
-    cfg = figures.PublicationFiguresConfig()
+    cfg = figures.PublicationFiguresConfig(remove_pattern="none")
     assert figures._wavefront_values_for(cfg) == "wavefront_values_tilt_removed.pkl"
-    cfg = figures.PublicationFiguresConfig(remove_array_tilt=False)
+    cfg = figures.PublicationFiguresConfig(
+        remove_array_tilt=False, remove_pattern="none"
+    )
     assert figures._wavefront_values_for(cfg) == "wavefront_values.pkl"
-    cfg = figures.PublicationFiguresConfig(remove_pattern="both")
+    cfg = figures.PublicationFiguresConfig()
     assert (
         figures._wavefront_values_for(cfg)
         == "wavefront_values_tilt_removed_phase_magnitude_removed.pkl"
@@ -95,7 +97,7 @@ def test_remove_pattern_config(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text("remove_pattern: phase\n")
     assert figures.load_config(path).remove_pattern == "phase"
-    assert figures.PublicationFiguresConfig().remove_pattern == "none"
+    assert figures.PublicationFiguresConfig().remove_pattern == "both"
     path.write_text("remove_pattern: gain\n")
     with pytest.raises(figures.ConfigError, match="remove_pattern"):
         figures.load_config(path)
@@ -106,7 +108,7 @@ def test_spectral_method_config(tmp_path):
     path.write_text("{}\n")
     cfg = figures.load_config(path)
     assert cfg.window == "hann"
-    assert cfg.first_difference is False
+    assert cfg.first_difference is True
     for window in ("tukey", "rectangular"):
         path.write_text(f"window: {window}\nfirst_difference: true\n")
         cfg = figures.load_config(path)
@@ -193,12 +195,12 @@ def test_label_panels_rejects_bad_locations():
     plt.close(fig)
 
 
-def test_spectra_model_defaults_to_fit(tmp_path):
+def test_spectra_model_defaults_to_gm_levels(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text("{}\n")
-    assert figures.load_config(path).spectra_model == "fit"
-    path.write_text("spectra_model: gm_levels\n")
     assert figures.load_config(path).spectra_model == "gm_levels"
+    path.write_text("spectra_model: fit\n")
+    assert figures.load_config(path).spectra_model == "fit"
     path.write_text("spectra_model: 3xGM\n")
     with pytest.raises(figures.ConfigError):
         figures.load_config(path)
@@ -207,12 +209,30 @@ def test_spectra_model_defaults_to_fit(tmp_path):
 def test_gm_levels_config(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text("{}\n")
-    assert figures.load_config(path).gm_levels == (1.0, 2.0)
-    path.write_text("gm_levels: [1]\n")
     assert figures.load_config(path).gm_levels == (1.0,)
+    path.write_text("gm_levels: [1, 2]\n")
+    assert figures.load_config(path).gm_levels == (1.0, 2.0)
     path.write_text("gm_levels: [0.5, 3]\n")
     assert figures.load_config(path).gm_levels == (0.5, 3.0)
     for bad in ["[]", "[1, 2, 3]", "[0]", "[-1]", "1", "[true]", "[one]"]:
         path.write_text(f"gm_levels: {bad}\n")
         with pytest.raises(figures.ConfigError):
             figures.load_config(path)
+
+
+def test_defaults_are_the_paper_settings(tmp_path):
+    """The default config (and so the template and 'reproduce paper') builds the figures as in the paper."""
+    cfg = figures.load_config(figures.write_config_template(tmp_path))
+    for key, value in figures.tools.PAPER_SETTINGS.items():
+        assert getattr(cfg, key) == value, key
+    assert cfg.spectra_model == "gm_levels"
+    assert cfg.gm_levels == (1.0,)
+
+
+def test_map_input_paths(monkeypatch, tmp_path):
+    monkeypatch.setattr(figures, "get_data_dir", lambda: tmp_path)
+    paths = figures.map_input_paths(figures.PublicationFiguresConfig())
+    assert paths["bathymetry"] == tmp_path / "environment_data" / "map_bathy.nc"
+    assert paths["ssh"] == tmp_path / "environment_data" / figures.SSH_FILENAME
+    cfg = figures.PublicationFiguresConfig(map=figures.MapConfig(ssh="/x/ssh.nc"))
+    assert figures.map_input_paths(cfg)["ssh"] == Path("/x/ssh.nc")

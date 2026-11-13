@@ -1,8 +1,9 @@
 # Estimation experiments config for n23_fluctuations_ragland.
 #
 # Compares design decisions in the estimation of F_phi and F_chi from the wavefront values
-# (n23_fluctuations_ragland.estimation). Run with `n23_fluctuation_analysis` -> "run estimation
-# experiments". Needs wavefront_values.pkl / wavefront_values_tilt_removed.pkl and
+# (n23_fluctuations_ragland.estimation). Not part of the paper, so not in the CLI; run with
+# estimation.run_experiment(estimation.load_config(path)). Needs wavefront_values.pkl /
+# wavefront_values_tilt_removed.pkl (tools.get_wavefront_values) and
 # ray_run_forward_back.pkl under $NESCAFE23_DATADIR/dataproducts.
 #
 # Writes to output_dir:

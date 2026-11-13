@@ -239,16 +239,10 @@ def test_config_sweep_and_errors(tmp_path):
         estimation.load_config(path)
 
 
-def test_menu_has_estimation_experiment_options():
-    import inspect
-
+def test_estimation_experiments_are_not_in_the_paper_cli():
+    """The estimation experiments are exploratory: run them from Python (`estimation.run_experiment`)."""
     import n23_fluctuations_ragland.cli as cli_mod
 
-    source = inspect.getsource(cli_mod.main)
-    for choice in (
-        "create estimation experiments config",
-        "run estimation experiments",
-    ):
-        assert source.count(f'"{choice}"') == 2, (
-            f"menu is missing or not wired: {choice}"
-        )
+    assert not any("estimation" in choice for choice in cli_mod.MENU_CHOICES)
+    assert hasattr(estimation, "run_experiment")
+    assert hasattr(estimation, "write_config_template")

@@ -10,8 +10,12 @@ notebook code as possible. The only systematic edits are:
 - ``text.usetex`` follows the config instead of being hard-coded to ``True``;
 - the random jitter in the intensity-distribution scatter is seeded.
 
-The figures only read cached data products, so the processing pipeline
-(``n23_fluctuation_analysis`` → "run all processing") must have been run first.
+The figures read cached data products, so the processing pipeline must have been run first
+(``n23_fluctuation_analysis --reproduce-paper`` runs it and then builds every figure).
+``Acoustic_Receptions`` and ``2D_slice`` also read the raw receptions (``dmod/dm*.mat``).
+
+The config defaults are the settings of the published analysis (`tools.PAPER_SETTINGS`;
+``spectra_model: gm_levels`` with ``gm_levels: [1]``). The other options are kept for exploration.
 
 Usage
 -----
@@ -143,12 +147,12 @@ class PublicationFiguresConfig:
     dpi: int | None = None
     usetex: bool = True
     seed: int = 0
-    remove_array_tilt: bool = True
-    remove_pattern: str = "none"
-    window: str = "hann"
-    first_difference: bool = False
-    spectra_model: str = "fit"
-    gm_levels: tuple[float, ...] = (1.0, 2.0)
+    remove_array_tilt: bool = tools.PAPER_SETTINGS["remove_array_tilt"]
+    remove_pattern: str = tools.PAPER_SETTINGS["remove_pattern"]
+    window: str = tools.PAPER_SETTINGS["window"]
+    first_difference: bool = tools.PAPER_SETTINGS["first_difference"]
+    spectra_model: str = "gm_levels"
+    gm_levels: tuple[float, ...] = (1.0,)
     map: MapConfig = field(default_factory=MapConfig)
 
     def __post_init__(self) -> None:
@@ -216,12 +220,12 @@ class PublicationFiguresConfig:
             msg = f"{path}.seed: expected an integer, got {seed!r}"
             raise ConfigError(msg)
 
-        remove_array_tilt = data.get("remove_array_tilt", True)
+        remove_array_tilt = data.get("remove_array_tilt", cls.remove_array_tilt)
         if not isinstance(remove_array_tilt, bool):
             msg = f"{path}.remove_array_tilt: expected true or false, got {remove_array_tilt!r}"
             raise ConfigError(msg)
 
-        remove_pattern = data.get("remove_pattern", "none")
+        remove_pattern = data.get("remove_pattern", cls.remove_pattern)
         if remove_pattern not in tools.REMOVE_PATTERN_CHOICES:
             msg = (
                 f"{path}.remove_pattern: expected one of {list(tools.REMOVE_PATTERN_CHOICES)}, "
@@ -229,7 +233,7 @@ class PublicationFiguresConfig:
             )
             raise ConfigError(msg)
 
-        window = data.get("window", "hann")
+        window = data.get("window", cls.window)
         if window not in tools.SPECTRAL_WINDOWS:
             msg = (
                 f"{path}.window: expected one of {list(tools.SPECTRAL_WINDOWS)}, "
@@ -237,17 +241,17 @@ class PublicationFiguresConfig:
             )
             raise ConfigError(msg)
 
-        first_difference = data.get("first_difference", False)
+        first_difference = data.get("first_difference", cls.first_difference)
         if not isinstance(first_difference, bool):
             msg = f"{path}.first_difference: expected true or false, got {first_difference!r}"
             raise ConfigError(msg)
 
-        spectra_model = data.get("spectra_model", "fit")
+        spectra_model = data.get("spectra_model", cls.spectra_model)
         if spectra_model not in SPECTRA_MODELS:
             msg = f"{path}.spectra_model: expected one of {list(SPECTRA_MODELS)}, got {spectra_model!r}"
             raise ConfigError(msg)
 
-        gm_levels = data.get("gm_levels", [1, 2])
+        gm_levels = data.get("gm_levels", list(cls.gm_levels))
         if (
             isinstance(gm_levels, str)
             or not isinstance(gm_levels, Sequence)
@@ -358,20 +362,20 @@ def load_config(path: str | Path) -> PublicationFiguresConfig:
 # ---------------------------------------------------------------------------
 
 
-def _dataproduct(name: str, cli_step: str) -> Path:
-    """Path of a cached data product, or an error naming the CLI step that makes it."""
+def _dataproduct(name: str, cli_step: str, hint: str | None = None) -> Path:
+    """Path of a cached data product, or an error naming the CLI step that makes it (or ``hint``)."""
     fn = get_data_dir() / "dataproducts" / name
     if not fn.exists():
-        msg = (
-            f"{fn} not found. Run '{cli_step}' in `n23_fluctuation_analysis` "
-            "(or 'run all processing') first."
+        how = hint or (
+            f"Run '{cli_step}' in `n23_fluctuation_analysis` (or 'reproduce paper') first."
         )
+        msg = f"{fn} not found. {how}"
         raise FileNotFoundError(msg)
     return fn
 
 
-def _load_pickle(name: str, cli_step: str) -> Any:
-    with _dataproduct(name, cli_step).open("rb") as f:
+def _load_pickle(name: str, cli_step: str, hint: str | None = None) -> Any:
+    with _dataproduct(name, cli_step, hint).open("rb") as f:
         return pickle.load(f)
 
 
@@ -708,6 +712,28 @@ def label_panels(
 # ---------------------------------------------------------------------------
 
 
+SSH_FILENAME = (
+    "cmems_obs-sl_glo_phy-ssh_my_allsat-l4-duacs-0.125deg_P1D_1773078040918.nc"
+)
+
+
+def map_input_paths(cfg: PublicationFiguresConfig) -> dict[str, Path]:
+    """Input files of the ``Map`` figure (``font``, ``bathymetry``, ``ssh``): the config's, or the defaults under
+    ``NESCAFE23_DATADIR``. A missing font only falls back to the default font."""
+    data_dir = get_data_dir()
+
+    def resolve(value: str | None, default: Path) -> Path:
+        return Path(value).expanduser() if value else default
+
+    return {
+        "font": resolve(cfg.map.font, data_dir / "fonts" / "RedHatDisplay-Medium.ttf"),
+        "bathymetry": resolve(
+            cfg.map.bathymetry, data_dir / "environment_data" / "map_bathy.nc"
+        ),
+        "ssh": resolve(cfg.map.ssh, data_dir / "environment_data" / SSH_FILENAME),
+    }
+
+
 def plot_map(cfg: PublicationFiguresConfig) -> Figure:
     """Study-area map: bathymetry, SSH front, hydrographic survey, moorings, globe inset.
 
@@ -715,13 +741,10 @@ def plot_map(cfg: PublicationFiguresConfig) -> Figure:
     ``map_inset`` cells), with the callouts of ``reference/Map.png`` added in code.
     """
     data_dir = get_data_dir()
+    paths = map_input_paths(cfg)
 
     # font (poster presentation settings)
-    font_path = (
-        Path(cfg.map.font).expanduser()
-        if cfg.map.font
-        else data_dir / "fonts" / "RedHatDisplay-Medium.ttf"
-    )
+    font_path = paths["font"]
     if font_path.exists():
         fm.fontManager.addfont(str(font_path))
         plt.rcParams["font.family"] = fm.FontProperties(fname=font_path).get_name()
@@ -738,23 +761,12 @@ def plot_map(cfg: PublicationFiguresConfig) -> Figure:
     ]
 
     # load environment data
-    fn = (
-        Path(cfg.map.bathymetry).expanduser()
-        if cfg.map.bathymetry
-        else data_dir / "environment_data" / "map_bathy.nc"
-    )
-    bathy = xr.open_dataset(fn)["elevation"]
+    bathy = xr.open_dataset(paths["bathymetry"])["elevation"]
 
     fn = data_dir / "environment_data" / "FCTD_SoundSpeed_Colosi_v2.mat"
     fctd = tools.get_fctd(fn=fn, r_smooth=3000)
 
-    fn = (
-        Path(cfg.map.ssh).expanduser()
-        if cfg.map.ssh
-        else data_dir
-        / "environment_data"
-        / "cmems_obs-sl_glo_phy-ssh_my_allsat-l4-duacs-0.125deg_P1D_1773078040918.nc"
-    )
+    fn = paths["ssh"]
     ssh_full = xr.open_dataset(fn)
 
     ssh_n23 = ssh_full.sel({"time": pd.Timestamp(cfg.map.ssh_dates[0])})["adt"]
@@ -1539,7 +1551,7 @@ def plot_phase_structure_integrand(cfg: PublicationFiguresConfig) -> Figure:
 def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
     """``publication_figures/Phi_Chi_Spectra.ipynb``: observed vs. GM-model phase/log-amplitude spectra.
 
-    The observed spectra are the bias-corrected log-means of the per-transmission periodograms, and the
+    The observed spectra are the arithmetic means of the per-transmission periodograms, and the
     shaded bands are ± their leave-one-transmission-out jackknife standard error
     (`tools.estimate_F_phi_chi`), with the spectral estimation method of ``cfg.window`` and
     ``cfg.first_difference``. The fit read with ``spectra_model: fit`` is the one made with the same method
@@ -1547,7 +1559,7 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
 
     ``cfg.spectra_model`` picks the model curves. ``"fit"`` (the notebook) draws the least squares GM
     level with its noise levels, model + noise dashed. ``"gm_levels"`` draws the GM levels of
-    ``cfg.gm_levels`` (default 1x GM solid and 2x GM dashed; ``[1]`` for 1x GM only) without noise and
+    ``cfg.gm_levels`` (default ``[1]``, 1x GM only, as in the paper; ``[1, 2]`` adds 2x GM dashed) without noise and
     does not need the fit, like `plot_ducted_vc`; the -8 overlay on the +7 panel is dash-dot for the
     first level and dotted for the second.
     """
@@ -1588,7 +1600,11 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
                 cfg.window,
                 cfg.first_difference,
             ).name,
-            "ɸ χ GM least squares fit",
+            "",
+            hint=(
+                "The GM + noise fit is not part of the paper pipeline; make it with "
+                "`tools.compute_phi_chi_LS_fit` (same settings), or use spectra_model: gm_levels."
+            ),
         )
 
     m = 2 * np.pi * np.logspace(-5, 0, 500)[None, :]  # [rad / m]

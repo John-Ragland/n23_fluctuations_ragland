@@ -19,17 +19,45 @@ def test_cli_imports():
         "compute_rays",
         "estimate_peak_locations",
         "estimate_array_tilt",
-        "get_wavefront_values",
-        "phi_chi_LS_fit",
-        "run_all_processing",
-        "source_geometry_sweep",
+        "estimate_arrival_time_offset_error",
+        "estimate_hydrophone_pattern",
+        "compute_wavefront_values_and_pattern",
         "create_publication_figures_config",
         "generate_publication_figures",
         "coherence_lengths",
-        "gm_levels",
-        "independence_test",
+        "reproduce_paper",
+        "check_paper_inputs",
     ]:
         assert hasattr(cli, name), f"cli.{name} is missing"
+
+
+def test_exploratory_entries_are_not_in_the_cli():
+    """Analysis that is not in the paper has no CLI entry; its code stays in tools / estimation."""
+    from n23_fluctuations_ragland import cli, tools
+
+    for name in [
+        "run_all_processing",
+        "source_geometry_sweep",
+        "phi_chi_LS_fit",
+        "gm_levels",
+        "independence_test",
+        "run_estimation_experiments",
+    ]:
+        assert not hasattr(cli, name), f"cli.{name} should not be in the paper CLI"
+    for name in ["source_geometry_sweep", "compute_phi_chi_LS_fit", "fit_F_phi_chis"]:
+        assert hasattr(tools, name), f"tools.{name} is missing"
+
+
+def test_menu_starts_with_reproduce_paper():
+    import inspect
+
+    from n23_fluctuations_ragland import cli
+
+    assert cli.MENU_CHOICES[0] == cli.MENU_REPRODUCE
+    assert cli.MENU_CHOICES[-1] == "exit"
+    source = inspect.getsource(cli.main)
+    for choice in cli.MENU_CHOICES[1:]:
+        assert f'"{choice}"' in source, f"menu choice not wired: {choice}"
 
 
 def test_tools_has_required_functions():
@@ -134,28 +162,6 @@ def test_check_output_exists_skips_existing(tmp_path, monkeypatch):
     assert calls == []
 
 
-def test_run_all_processing_has_all_steps():
-    """run_all_processing includes every processing step."""
-    import inspect
-
-    from n23_fluctuations_ragland import cli
-
-    source = inspect.getsource(cli.run_all_processing)
-
-    expected_funcs = [
-        "compute_arrival_time_offset",
-        "estimate_peak_locations",
-        "estimate_array_tilt",
-        "get_wavefront_values",
-        "compute_mean_pulse",
-        "compute_rays",
-        "source_geometry_sweep",
-        "phi_chi_LS_fit",
-    ]
-    for func_name in expected_funcs:
-        assert func_name in source, f"run_all_processing is missing step: {func_name}"
-
-
 def test_arrival_time_offset_saves_per_array_offsets():
     """compute_arrival_time_offset pickles the upper/lower offsets the publication figure plots."""
     import inspect
@@ -175,9 +181,8 @@ def test_menu_has_publication_figure_options():
 
     source = inspect.getsource(cli_mod.main)
     for choice in ("create publication figures config", "generate publication figures"):
-        assert source.count(f'"{choice}"') == 2, (
-            f"menu is missing or not wired: {choice}"
-        )
+        assert choice in cli_mod.MENU_CHOICES
+        assert source.count(f'"{choice}"') == 1, f"menu choice not wired: {choice}"
 
 
 def test_estimate_F_phi_chi_uses_get_data_dir():
@@ -230,16 +235,6 @@ def test_coherence_lengths_latex_table():
     table = tools.coherence_lengths_latex_table(observed, theory)
     rows = [line for line in table.splitlines() if line.startswith("$")]
     assert rows[1] == "$+7$ & -- & 50.0 $\\pm$ 4.2 & -- & 120.0 & -- \\\\"
-
-
-def test_menu_has_gm_levels_option():
-    """The interactive menu offers the GM levels table."""
-    import inspect
-
-    import n23_fluctuations_ragland.cli as cli_mod
-
-    source = inspect.getsource(cli_mod.main)
-    assert source.count('"GM levels (spectra vs. coherence)"') == 2
 
 
 def test_structure_function_from_coherence():
@@ -518,9 +513,10 @@ def test_wavefront_values_paths_per_mode(tmp_path, monkeypatch):
     import n23_fluctuations_ragland.cli as cli_mod
 
     monkeypatch.setattr(cli_mod.tools, "get_data_dir", lambda: tmp_path)
-    assert cli_mod._wavefront_values_path(False).name == "wavefront_values.pkl"
+    assert cli_mod.tools.wavefront_values_path(False).name == "wavefront_values.pkl"
     assert (
-        cli_mod._wavefront_values_path(True).name == "wavefront_values_tilt_removed.pkl"
+        cli_mod.tools.wavefront_values_path(True).name
+        == "wavefront_values_tilt_removed.pkl"
     )
 
 
@@ -617,10 +613,10 @@ def test_phi_chi_LS_fit_uses_matching_wavefront_values(
     """The fit estimates the spectra in the requested mode and saves to that mode's file."""
     import pickle
 
-    import n23_fluctuations_ragland.cli as cli_mod
+    from n23_fluctuations_ragland import tools
 
     (tmp_path / "dataproducts").mkdir()
-    monkeypatch.setattr(cli_mod.tools, "get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(tools, "get_data_dir", lambda: tmp_path)
 
     calls = []
 
@@ -633,23 +629,22 @@ def test_phi_chi_LS_fit_uses_matching_wavefront_values(
         calls.append((remove_array_tilt, remove_pattern, window, first_difference))
         return "m", None, None, "phi_lm", "phi_ls", "chi_lm", "chi_ls"
 
-    monkeypatch.setattr(cli_mod.tools, "estimate_F_phi_chi", fake_estimate)
+    monkeypatch.setattr(tools, "estimate_F_phi_chi", fake_estimate)
     monkeypatch.setattr(
-        cli_mod.tools,
+        tools,
         "fit_F_phi_chis",
         lambda *args, **kwargs: {"args": args, "kwargs": kwargs},
     )
 
-    cli_mod.phi_chi_LS_fit(
+    tools.compute_phi_chi_LS_fit(
         remove_array_tilt=remove_array_tilt,
         remove_pattern=remove_pattern,
         window=window,
         first_difference=first_difference,
-        force_overwrite=True,
     )
 
     assert calls == [(remove_array_tilt, remove_pattern, window, first_difference)]
-    path = cli_mod.tools.phi_chi_LS_fit_path(
+    path = tools.phi_chi_LS_fit_path(
         remove_array_tilt, remove_pattern, window, first_difference
     )
     with path.open("rb") as f:
@@ -659,24 +654,6 @@ def test_phi_chi_LS_fit_uses_matching_wavefront_values(
         }
     written = list((tmp_path / "dataproducts").iterdir())
     assert written == [path]
-
-
-def test_run_all_processing_fits_both_modes():
-    """run_all_processing fits the ɸ χ spectra with and without the array tilt removed."""
-    import inspect
-
-    from n23_fluctuations_ragland import cli
-
-    source = inspect.getsource(cli.run_all_processing)
-    assert source.count("phi_chi_LS_fit,") == 2
-    # wavefront values and the fit, each in both modes, never with the hydrophone pattern removed
-    assert source.count('{"remove_array_tilt": True, "remove_pattern": "none"}') == 1
-    assert source.count('{"remove_array_tilt": False, "remove_pattern": "none"}') == 1
-    assert source.count('"remove_array_tilt": True,') == 2
-    assert source.count('"remove_array_tilt": False,') == 2
-    # the fits use the default spectral method, so run all never prompts for it
-    assert source.count('"window": "hann",') == 2
-    assert source.count('"first_difference": False,') == 2
 
 
 def test_peak_locations_saves_upper_array():
@@ -1005,14 +982,218 @@ def test_jackknife_arrival_time_offset_leaves_out_every_hydrophone():
         assert np.all(se < 0.01)
 
 
-def test_menu_has_arrival_time_offset_error():
-    import inspect
+def test_check_output_exists_skip_existing_reuses_without_prompt(tmp_path, monkeypatch):
+    """skip_existing=True reuses an existing output without asking, and still runs when it is missing."""
+    from n23_fluctuations_ragland.cli import check_output_exists
 
-    import n23_fluctuations_ragland.cli as cli_mod
+    def no_prompt(*a, **kw):
+        raise AssertionError("must not prompt")
 
-    source = inspect.getsource(cli_mod.main)
-    assert '"estimate arrival time offset error"' in source
-    assert "estimate_arrival_time_offset_error()" in source
-    assert "estimate_arrival_time_offset_error" in inspect.getsource(
-        cli_mod.run_all_processing
+    monkeypatch.setattr("n23_fluctuations_ragland.cli.questionary.confirm", no_prompt)
+    output_file = tmp_path / "out.pkl"
+    calls = []
+
+    @check_output_exists(output_file)
+    def my_func():
+        calls.append(1)
+
+    my_func(skip_existing=True)
+    assert calls == [1]
+    output_file.touch()
+    my_func(skip_existing=True)
+    assert calls == [1]
+
+
+def _paper_data_dir(tmp_path, n_dmod=23, environment=True):
+    from n23_fluctuations_ragland import figures
+
+    (tmp_path / "dmod").mkdir(parents=True)
+    (tmp_path / "dataproducts").mkdir()
+    for k in range(n_dmod):
+        (tmp_path / "dmod" / f"dm{k:03d}.mat").touch()
+    if environment:
+        env = tmp_path / "environment_data"
+        env.mkdir()
+        for name in (
+            "FCTD_SoundSpeed_Colosi_v2.mat",
+            "SION_CTD_new.mat",
+            "SIOE_CTD.mat",
+            "map_bathy.nc",
+            figures.SSH_FILENAME,
+        ):
+            (env / name).touch()
+    return tmp_path
+
+
+@pytest.fixture
+def paper_data_dir(tmp_path, monkeypatch):
+    from n23_fluctuations_ragland import cli, figures
+
+    data_dir = _paper_data_dir(tmp_path / "data")
+    for mod in (cli, figures):
+        monkeypatch.setattr(mod, "get_data_dir", lambda: data_dir)
+    return data_dir
+
+
+def test_check_paper_inputs_complete(paper_data_dir):
+    from n23_fluctuations_ragland import cli
+
+    inputs = cli.check_paper_inputs()
+    assert inputs.ok, inputs.missing
+    # the map font is optional
+    assert any("font" in w for w in inputs.warnings)
+
+
+def test_check_paper_inputs_lists_every_missing_input(tmp_path, monkeypatch):
+    from n23_fluctuations_ragland import cli, figures
+
+    data_dir = _paper_data_dir(tmp_path, n_dmod=0, environment=False)
+    for mod in (cli, figures):
+        monkeypatch.setattr(mod, "get_data_dir", lambda: data_dir)
+    inputs = cli.check_paper_inputs()
+    assert not inputs.ok
+    text = "\n".join(inputs.missing)
+    assert "expected 23 receptions, found 0" in text
+    assert "on reasonable request" in text
+    for name in ("FCTD_SoundSpeed_Colosi_v2.mat", "SION_CTD_new.mat", "SIOE_CTD.mat"):
+        assert name in text
+    assert len(inputs.missing) == 6
+
+
+def test_check_paper_inputs_without_datadir(monkeypatch):
+    from n23_fluctuations_ragland import cli
+
+    def unset():
+        raise OSError("unset")
+
+    monkeypatch.setattr(cli, "get_data_dir", unset)
+    inputs = cli.check_paper_inputs()
+    assert not inputs.ok
+    assert "NESCAFE23_DATADIR" in inputs.missing[0]
+
+
+def test_paper_steps_order():
+    """The steps run in the order their products depend on each other, ending with Table II and the figures."""
+    from n23_fluctuations_ragland import cli
+
+    names = [name for name, _ in cli.paper_steps("out")]
+    assert names == [
+        "arrival time offset",
+        "arrival time offset error (jackknife)",
+        "mean pulse",
+        "peak locations",
+        "array tilt",
+        "wavefront values and hydrophone pattern",
+        "rays",
+        "Table II",
+        "publication figures",
+    ]
+
+
+def test_wavefront_values_and_pattern_order(monkeypatch):
+    """The pattern is estimated from the unpatterned values before the paper's values are made."""
+    from n23_fluctuations_ragland import cli
+
+    calls = []
+    monkeypatch.setattr(
+        cli,
+        "_compute_wavefront_values",
+        lambda **kw: calls.append(
+            ("values", kw["remove_array_tilt"], kw["remove_pattern"])
+        ),
     )
+    monkeypatch.setattr(
+        cli, "estimate_hydrophone_pattern", lambda **kw: calls.append(("pattern",))
+    )
+    cli.compute_wavefront_values_and_pattern(skip_existing=True)
+    assert calls == [("values", True, "none"), ("pattern",), ("values", True, "both")]
+
+
+def test_reproduce_paper_runs_steps_in_order(paper_data_dir, tmp_path):
+    from n23_fluctuations_ragland import cli
+
+    calls = []
+    steps = [
+        (name, lambda name=name, **kw: calls.append((name, kw)))
+        for name in ("a", "b", "c")
+    ]
+    out = tmp_path / "out"
+    assert cli.reproduce_paper(out, steps=steps)
+    assert calls == [(n, {"force_overwrite": True}) for n in "abc"]
+
+    calls.clear()
+    assert cli.reproduce_paper(out, reuse=True, steps=steps)
+    assert calls == [(n, {"skip_existing": True}) for n in "abc"]
+    report = (out / "reproduction_report.txt").read_text()
+    assert "PAPER_SETTINGS" in report
+    assert "ok  a" in report
+
+
+def test_reproduce_paper_stops_at_the_first_failure(paper_data_dir, tmp_path):
+    from n23_fluctuations_ragland import cli
+
+    calls = []
+
+    def fail(**kw):
+        raise RuntimeError("boom")
+
+    steps = [
+        ("a", lambda **kw: calls.append("a")),
+        ("b", fail),
+        ("c", lambda **kw: calls.append("c")),
+    ]
+    out = tmp_path / "out"
+    assert not cli.reproduce_paper(out, steps=steps)
+    assert calls == ["a"]
+    report = (out / "reproduction_report.txt").read_text()
+    assert "FAILED  b" in report
+    assert "c (not run)" in report
+    assert "boom" in report
+
+
+def test_reproduce_paper_checks_inputs_first(tmp_path, monkeypatch):
+    from n23_fluctuations_ragland import cli, figures
+
+    data_dir = _paper_data_dir(tmp_path / "data", n_dmod=5)
+    for mod in (cli, figures):
+        monkeypatch.setattr(mod, "get_data_dir", lambda: data_dir)
+    calls = []
+    out = tmp_path / "out"
+    assert not cli.reproduce_paper(out, steps=[("a", lambda **kw: calls.append("a"))])
+    assert calls == []
+    assert not out.exists()
+
+
+def test_main_reproduce_paper_flag(monkeypatch):
+    from n23_fluctuations_ragland import cli
+
+    seen = {}
+
+    def fake_reproduce(output_dir, reuse=False):
+        seen.update(output_dir=output_dir, reuse=reuse)
+        return False
+
+    monkeypatch.setattr(cli, "reproduce_paper", fake_reproduce)
+    assert cli.main(["--reproduce-paper", "--output", "x", "--reuse"]) == 1
+    assert seen == {"output_dir": "x", "reuse": True}
+
+
+def test_coherence_lengths_uses_paper_settings_and_writes_table(tmp_path, monkeypatch):
+    from n23_fluctuations_ragland import cli
+
+    loaded = []
+
+    def fake_load(remove_array_tilt, remove_pattern="none"):
+        loaded.append((remove_array_tilt, remove_pattern))
+        return {ray_id: ray_id for ray_id in cli.tools.DUCTED_RAY_IDS}
+
+    monkeypatch.setattr(cli, "_load_wavefront_values", fake_load)
+    monkeypatch.setattr(cli.tools, "estimate_observed_coherence_lengths", lambda wv: wv)
+    monkeypatch.setattr(cli.tools, "compute_theoretical_coherence_lengths", dict)
+    monkeypatch.setattr(
+        cli.tools, "coherence_lengths_latex_table", lambda o, t: "TABLE"
+    )
+    path = tmp_path / "t" / "table_II.tex"
+    assert cli.coherence_lengths(output_path=path) == "TABLE"
+    assert loaded == [(True, "both")]
+    assert path.read_text() == "TABLE\n"

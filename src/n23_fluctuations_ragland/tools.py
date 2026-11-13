@@ -468,6 +468,17 @@ def phi_chi_LS_fit_path(
     return get_data_dir() / "dataproducts" / fn
 
 
+PAPER_SETTINGS = {
+    "remove_array_tilt": True,
+    "remove_pattern": "both",
+    "window": "hann",
+    "first_difference": True,
+}
+"""Processing choices of the published analysis (the manuscript's Figs 8, 9, 11 and Table II): wavefront values
+with the lower-array tilt and the hydrophone phase and magnitude pattern removed, and spectra estimated with a
+Hann taper after first differencing. `cli.reproduce_paper` and the publication figures config defaults use it."""
+
+
 def hydrophone_pattern_path():
     """Path of the hydrophone pattern estimate, ``dataproducts/hydrophone_pattern.pkl``."""
     return get_data_dir() / "dataproducts" / "hydrophone_pattern.pkl"
@@ -3197,6 +3208,79 @@ def run_rays(
     return rays, eigs, rays_back, eigs_back, envi, envi_back, geo
 
 
+def source_geometry_sweep(
+    lower_array_depth,
+    source_depths=(2000, 2050, 2100, 2150, 2200, 2250, 2300, 2350, 2400),
+    receiver_ranges=(148e3, 149e3, 150e3, 151e3, 152e3, 153e3, 154e3, 155e3),
+):
+    """
+    Sweep the source depth and receiver range, tracing rays through the FCTD environment, to match the observed
+    ducted section of the wavefront (exploratory; read by ``panel_apps/source_geometry_sweep.py``).
+
+    Parameters
+    ----------
+    lower_array_depth : float
+        receiver depth [m] of the eigenrays, e.g. the mean actual depth of the lower array
+    source_depths, receiver_ranges : sequence of float
+        grid of source depths [m] and receiver ranges [m]
+
+    Returns
+    -------
+    sweep : dict
+        ``source_depths``, ``receiver_ranges`` (flattened grid), ``rays``, ``eigs`` and ``envi``, the contents of
+        ``ray_geo_sweep.pkl``
+    """
+    fctd = compute_filtered_fctd_grid(z_smooth=500, r_smooth=10000)
+    front_location = 35e3  # m
+    fctd = fctd.assign_coords({"range": (fctd.range.to_numpy() + front_location)})
+
+    bathy = xr.DataArray(
+        np.linspace(4908, 4908, 100),
+        dims=["range"],
+        coords={"range": np.linspace(0, 200e3, 100)},
+    )
+    envi = pr.OceanEnvironment2D(sound_speed=fctd["c"], bathymetry=bathy)
+
+    ssource_depths, rreceiver_ranges = np.meshgrid(
+        np.asarray(source_depths, dtype=float), np.asarray(receiver_ranges, dtype=float)
+    )
+    ssource_depths = ssource_depths.flatten()
+    rreceiver_ranges = rreceiver_ranges.flatten()
+
+    rays = []
+    eigs = []
+    for k, (source_depth, receiver_range) in enumerate(
+        zip(ssource_depths, rreceiver_ranges, strict=True)
+    ):
+        print(
+            f"Run {k + 1}/{len(ssource_depths)}, zs = {source_depth}[m], r={receiver_range / 1000} [km]..."
+        )
+        rays.append(
+            pr.shoot_rays(
+                source_depth, 0, np.linspace(-35, 35, 1001), receiver_range, 1000, envi
+            )
+        )
+        eigs.append(
+            pr.find_eigenrays(
+                rays[k],
+                [float(lower_array_depth)],
+                source_depth,
+                0,
+                receiver_range,
+                1000,
+                envi,
+            )
+        )
+
+    return {
+        "source_depths": ssource_depths,
+        "receiver_ranges": rreceiver_ranges,
+        "rays": rays,
+        "eigs": eigs,
+        "envi": envi,
+    }
+
+
 def compute_mean_pulse():
     """
     Compute the mean pulse and mean pulse noise for the 23 receptions
@@ -3874,6 +3958,37 @@ def fit_F_phi_chis(m_data, F_phi_lm, F_chi_lm, F_phi_ls, F_chi_ls):
             bounds=[(1e-3, None), (0, None), (0, None)],
         )
 
+    return results
+
+
+def compute_phi_chi_LS_fit(
+    remove_array_tilt=True, remove_pattern="none", window="hann", first_difference=False
+):
+    """
+    Fit the GM energy and observational noise levels to the observed ɸ and χ spectra (`estimate_F_phi_chi`,
+    `fit_F_phi_chis`) and write the fit to `phi_chi_LS_fit_path` of the same settings.
+
+    Not part of the published analysis (the paper draws the 1x GM model only); this is what the publication
+    figures config's ``spectra_model: fit`` reads.
+
+    Returns
+    -------
+    results : dict
+        output of `fit_F_phi_chis`
+    """
+    m_data, _, _, F_phi_lm, F_phi_ls, F_chi_lm, F_chi_ls = estimate_F_phi_chi(
+        remove_array_tilt=remove_array_tilt,
+        remove_pattern=remove_pattern,
+        window=window,
+        first_difference=first_difference,
+    )
+    results = fit_F_phi_chis(m_data, F_phi_lm, F_chi_lm, F_phi_ls, F_chi_ls)
+
+    path = phi_chi_LS_fit_path(
+        remove_array_tilt, remove_pattern, window, first_difference
+    )
+    with path.open("wb") as f:
+        pickle.dump(results, f)
     return results
 
 

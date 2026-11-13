@@ -82,37 +82,76 @@ and need to be installed manually
 | ------- | ------ | ------------------------------------ | ------- |
 | cmps    | GitHub | https://github.com/John-Ragland/cmps | 0.1     |
 
-## Data Analysis
+## Reproducing the paper
 
-The primary analysis is performed via the command line interface (CLI). Prior to
-running the notebooks that generate the publication figures, the analysis must
-be run. All steps can be run by selecting `run all`, or individual steps can be
-selected within the CLI. To run the CLI type the following in the terminal
+Everything in the paper that comes from this package (Figs. 1, 2, 5–11 and
+Table II) is made by one command:
 
 ```bash
-nescafe23-processing
+n23_fluctuation_analysis --reproduce-paper --output paper_output
 ```
 
-### CLI Documentation
+or interactively, with the first menu entry of `n23_fluctuation_analysis`
+("reproduce paper"). It checks first that every input is present, then runs
+the processing steps in order, writes Table II, builds every figure, and stops
+at the first failure. Add `--reuse` to reuse data products that already exist
+instead of recomputing them. Figs. 3, 4 and 12 (the moored internal-wave
+observations) are not made by this package.
+
+Outputs:
+
+- `$NESCAFE23_DATADIR/dataproducts/`: the intermediate data products (arrival
+  time offsets and their jackknife errors, mean pulse, peak picks, array tilt,
+  hydrophone pattern, wavefront values, ray traces)
+- `paper_output/table_II.tex`: Table II
+- `paper_output/figures/`: the figures, named as in `reference/`
+- `paper_output/reproduction_report.txt`: package version and commit, the
+  analysis settings (`tools.PAPER_SETTINGS`), the time of each step, and the
+  numbers the paper quotes from the data products
+
+**Inputs.** `NESCAFE23_DATADIR` (in the `.env` of the workspace root) must
+contain:
+
+| Path                                       | Contents                                   |
+| ------------------------------------------ | ------------------------------------------ |
+| `dmod/dm*.mat`                             | the 23 demodulated receptions (on request) |
+| `environment_data/FCTD_SoundSpeed_Colosi_v2.mat` | FCTD section                         |
+| `environment_data/SION_CTD_new.mat`, `SIOE_CTD.mat` | mooring CTD casts                 |
+| `environment_data/map_bathy.nc`            | GEBCO bathymetry for the map               |
+| `environment_data/cmems_obs-sl_glo_phy-ssh_my_allsat-l4-duacs-0.125deg_P1D_1773078040918.nc` | CMEMS sea surface height |
+| `fonts/RedHatDisplay-Medium.ttf`           | map font (optional)                        |
+
+The demodulated receptions are not public. They are available from the
+corresponding author on reasonable request. Without LaTeX on the `PATH`, the
+figures are built with `usetex: false`.
+
+**Individual steps.** The other menu entries run one step at a time, in
+pipeline order: arrival time offset → its jackknife error → mean pulse → peak
+locations → array tilt → wavefront values and hydrophone pattern → rays →
+Table II → publication figures. To build the figures with other settings, use
+"create publication figures config" and "generate publication figures". The
+config's defaults are the paper's.
+
+**Exploratory analysis.** Analysis that is not in the paper (the GM + noise fit
+of the spectra, the GM levels table, the transmission independence test, the
+estimation experiments, the theory environments, the source geometry sweep) is
+not in the CLI. Its code is in `tools`, `estimation` and `theory_environments`,
+and the one-off studies are in `analysis/`.
 
 **Source Localization** The depth and range of the acoustic source is estimated
 with a linear Gauss-Markov approach, based on (Munk et. al. 1995). This method
 is in the process of being published separately, so the code for this is omitted
 from the initial public release of this package. If this code is of interest to
-you, please feel free to reach out to me (John Ragland) directly. The source
-localization option in the CLI will cause an error if called without the
-`src/NESCAFE23_fluctuations/source_localization.py` file.
+you, please feel free to reach out to me (John Ragland) directly.
 
 **Source Geometry Sweep** The exact source location is unknown, because the
 mooring was lost. For this paper, the source geometry is chosen based on the
 best match of rays through the FCTD and the lineup of the ducted arrivals and
-first boundary reflected arrivals. A more rigorous approach that makes uses a
-Gauss-Markov linear inversion method is under development and will be published
-separately. The source geometry sweep option in the CLI will perform a grid
-search over a range of source depths and ranges. This must be computed prior to
-running the source geometry sweep app. This option is not required for the full
-analysis, but demostrates the context in which the source geometry was chosen
-for the analysis of this paper.
+first boundary reflected arrivals. `tools.source_geometry_sweep` performs a grid
+search over a range of source depths and ranges, whose result
+(`ray_geo_sweep.pkl`) the source geometry sweep panel app shows. It is not
+required for the analysis, but shows the context in which the source geometry
+was chosen.
 
 ### Interactive Plots
 
@@ -120,13 +159,14 @@ Interactive dashboards and visualizations are available as Panel apps in the
 `panel_apps/` directory. To serve Panel apps, use:
 
 ```bash
-nescafe23_panel
+n23_panel
 ```
 
 ## Figures
 
-The figures for publication are generated with Jupyter Notebooks located
-relative to the package structure at `notebooks/publication_figures`.
+The publication figures are made by `src/n23_fluctuations_ragland/figures.py`
+(see above). The notebooks in `notebooks/publication_figures` are the original
+figure source and may drift from the current code.
 
 ## Development
 

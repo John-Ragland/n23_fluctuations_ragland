@@ -26,7 +26,7 @@ so the model is computed once at GM = 1 for each ray and wavenumber grid, and th
 `tools.compute_F_phi_chi`, the upper wavenumber mask (m_high ∝ J ∝ 1/GM) is not moved with the GM
 level. It only matters for GM above ~5, where m_high enters the data band.
 
-Use the CLI ("create estimation experiments config", "run estimation experiments") or
+Not part of the paper, so not in the CLI: write a config with `write_config_template(path)`, then run
 `run_experiment(load_config(path))`.
 """
 
