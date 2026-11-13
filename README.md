@@ -18,9 +18,6 @@
 [conda-link]:               https://github.com/conda-forge/NESCAFE23_fluctuations-feedstock
 [github-discussions-badge]: https://img.shields.io/static/v1?label=Discussions&message=Ask&color=blue&logo=github
 [github-discussions-link]:  https://github.com/John-Ragland/NESCAFE23_fluctuations/discussions
-[pypi-link]:                https://pypi.org/project/NESCAFE23_fluctuations/
-[pypi-platforms]:           https://img.shields.io/pypi/pyversions/NESCAFE23_fluctuations
-[pypi-version]:             https://img.shields.io/pypi/v/NESCAFE23_fluctuations
 [rtd-badge]:                https://readthedocs.org/projects/NESCAFE23_fluctuations/badge/?version=latest
 [rtd-link]:                 https://NESCAFE23_fluctuations.readthedocs.io/en/latest/?badge=latest
 [coverage-badge]:           https://codecov.io/github/John-Ragland/NESCAFE23_fluctuations/branch/main/graph/badge.svg
