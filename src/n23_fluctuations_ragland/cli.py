@@ -31,6 +31,7 @@ import numpy as np
 import questionary
 from nescafe23 import convert_to_xarray
 from nescafe23.data import get_data_dir
+from nescafe23.processing import get_peak_location
 from scipy import signal
 from tqdm import tqdm
 
@@ -714,9 +715,7 @@ def estimate_peak_locations():
     """
     data_dir = get_data_dir()
     dss = tools.open_receptions()
-    times, angles, snrs, upper_times, upper_angles, upper_snrs = n23.get_peak_location(
-        dss
-    )
+    times, angles, snrs, upper_times, upper_angles, upper_snrs = get_peak_location(dss)
     peak_locations = {
         "times": times,
         "angles": angles,
