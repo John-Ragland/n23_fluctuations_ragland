@@ -3,10 +3,6 @@
 [![Actions Status][actions-badge]][actions-link]
 [![Documentation Status][rtd-badge]][rtd-link]
 
-[![PyPI version][pypi-version]][pypi-link]
-[![Conda-Forge][conda-badge]][conda-link]
-[![PyPI platforms][pypi-platforms]][pypi-link]
-
 [![GitHub Discussion][github-discussions-badge]][github-discussions-link]
 
 [![Coverage][coverage-badge]][coverage-link]
@@ -37,13 +33,14 @@ Code supporting the data analysis of the NESCAFE 2023 Experiment. The NESCAFE
 front. An analysis of the fluctuations of acoustic intensity, phase, and the
 coherence of the acoustic receptions is described the paper _Observations of
 Acoustic Fluctuations Across the Gulf Stream Front_, available in preprint
-[here](wwww.placeholder.com).
+[here](https://essopenarchive.org/doi/full/10.22541/essoar.15006016/v1).
 
 This package contains the code used for the data analysis that is presented in
 this paper, as well as generating the figures for publication.
 
 ## Installation / Setup
 
+This package is a submodule to the parent package [NESCAFE23](https://github.com/John-Ragland/NESCAFE23)
 The package can be installed with pip via PyPI. The package is designed to run
 on python 3.13.
 
@@ -153,51 +150,12 @@ search over a range of source depths and ranges, whose result
 required for the analysis, but shows the context in which the source geometry
 was chosen.
 
-### Interactive Plots
-
-Interactive dashboards and visualizations are available as Panel apps in the
-`panel_apps/` directory. To serve Panel apps, use:
-
-```bash
-n23_panel
-```
-
 ## Figures
 
 The publication figures are made by `src/n23_fluctuations_ragland/figures.py`
 (see above). The notebooks in `notebooks/publication_figures` are the original
 figure source and may drift from the current code.
 
-## Development
-
-**TO DO**
-
-- [x] add script for mixing together sound speeds, currently using
-      'environment_data/dataproducts/full_field_new.nc'
-- [ ] find bugs in source localization code. Currently using best guess of
-      geometry below, which is the first transmission source localization
-
-```python
-source_depth = 2361.50872806
-source_range = 0
-launch_angles = np.linspace(-30, 30, 8000)
-receiver_range = 150404.34909747
-num_range_save = 1000
-receiver_depths = [999.37979522]
-```
-
-- [ ] update calculation of rays with final environment / geometry, etc.
-      Currently using 'NESCAFE23_analysis/dataproducts/ray_run_forward_back.pkl'
-      /Users/john/Code/NESCAFE/nescafe_pilot_analysis/wave_statistics/ray_run_forward_back_new_stitch.pkl)
-- [ ] update pygenray to reflect the latest version on pypi, so that everything
-      works as expected.
-  - right now I just have the local clone installating in the venv
-
-- [ ] Fix $zeta_1$ and $zeta_2$ for +7b, currently the backward raytrace does
-      not find the eigen ray
-
-- [ ] currently using solutionsv1.mat for source localization. Evaluate if
-      source localization code is needed.
 
 ## References
 

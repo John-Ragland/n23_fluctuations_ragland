@@ -2708,7 +2708,8 @@ def estimate_observed_coherence_lengths(
     Returns
     -------
     coherence_lengths : dict
-        for each ray ID, a dict with `z0` [m], its jackknife standard deviation `z0_std` [m], and `t0` [s]
+        for each ray ID, a dict with `z0` [m], the Gaussian fit amplitude `A0`, their jackknife standard
+        deviations `z0_std` [m] and `A0_std`, and `t0` [s]
     """
     coherence_lengths = {}
     for ray_id, X in wavefront_values.items():
@@ -2720,6 +2721,8 @@ def estimate_observed_coherence_lengths(
         coherence_lengths[ray_id] = {
             "z0": vc["z0"],
             "z0_std": float(np.sqrt(vc["z0_var"])),
+            "A0": float(vc["A0"]),
+            "A0_std": float(np.sqrt(vc["A0_var"])),
             "t0": t0,
         }
 
@@ -2779,9 +2782,20 @@ def compute_theoretical_coherence_lengths(fc: float = 250, zeta0: float = 7.3):
     return coherence_lengths
 
 
-def coherence_lengths_latex_table(observed: dict, theory: dict) -> str:
+# rows of the coherence lengths table: each observed (ducted) ray and the predicted ray IDs it is compared to.
+# The +7 observation includes the unresolved -8 arrival, as in the Ducted_VC figure.
+COHERENCE_TABLE_ROWS = {"+7": ["-8", "+7"], "-7": ["-7"], "+6": ["+6"], "-6": ["-6"]}
+
+
+def coherence_lengths_latex_table(
+    observed: dict, theory: dict, rows: dict | None = None
+) -> str:
     r"""
-    Format observed and theoretical coherence lengths as a LaTeX (booktabs) table.
+    Format observed and theoretical vertical coherence lengths as a LaTeX table.
+
+    Each observed ray spans (``\multirow``) the rows of the predictions it is compared to: one row per
+    predicted ray ID and eigenray pair. A ray ID with several eigenray pairs is labelled with a subscript
+    per path (``$-6_1$``, ``$-6_2$``, ...). The table needs ``\usepackage{multirow}``.
 
     Parameters
     ----------
@@ -2789,53 +2803,70 @@ def coherence_lengths_latex_table(observed: dict, theory: dict) -> str:
         output of `estimate_observed_coherence_lengths`
     theory : dict
         output of `compute_theoretical_coherence_lengths`
+    rows : dict, optional
+        observed ray ID -> list of predicted ray IDs, in table order. Default is `COHERENCE_TABLE_ROWS`.
 
     Returns
     -------
     table : str
-        LaTeX table. Coherence times are reported in minutes. Missing values are `--`.
+        LaTeX table with columns Ray ID, $z_0$ obs [m], $z_0$ pred [m], $A_0$ obs. Missing values are `--`.
     """
+    if rows is None:
+        rows = COHERENCE_TABLE_ROWS
 
-    def fmt(value, scale=1.0):
+    def fmt(value):
         if value is None or not np.isfinite(value):
             return "--"
-        return f"{value * scale:.1f}"
+        return f"{value:.1f}"
 
     def fmt_std(value, std):
         if std is None or not np.isfinite(std) or fmt(value) == "--":
             return fmt(value)
         return f"{value:.1f} $\\pm$ {std:.1f}"
 
-    ray_ids = [
-        ray_id for ray_id in EIG_INDEXS if ray_id in observed or ray_id in theory
-    ]
-    ray_ids += [ray_id for ray_id in observed if ray_id not in ray_ids]
-    ray_ids += [ray_id for ray_id in theory if ray_id not in ray_ids]
+    def fmt_sci(value, std):
+        if value is None or not np.isfinite(value):
+            return "--"
+        exponent = int(np.floor(np.log10(abs(value)))) if value != 0 else 0
+        mantissa = value / 10**exponent
+        if std is None or not np.isfinite(std):
+            return f"${mantissa:.2f} \\times 10^{{{exponent}}}$"
+        return f"$({mantissa:.2f} \\pm {std / 10**exponent:.2f}) \\times 10^{{{exponent}}}$"
 
-    rows = []
-    for ray_id in ray_ids:
-        obs = observed.get(ray_id, {})
-        pairs = theory.get(ray_id, [{}])
-        for n, gm in enumerate(pairs):
-            obs_n = obs if n == 0 else {}
-            pair = str(n) if ray_id in theory else "--"
-            rows.append(
-                f"${ray_id}$ & {pair} & {fmt_std(obs_n.get('z0'), obs_n.get('z0_std'))} & "
-                f"{fmt(gm.get('z0'))} & "
-                f"{fmt(obs_n.get('t0'), 1 / 60)} & {fmt(gm.get('t0'), 1 / 60)} \\\\"
+    def multirow(n, text):
+        return text if n == 1 else f"\\multirow{{{n}}}{{*}}{{{text}}}"
+
+    body = []
+    for obs_id, pred_ids in rows.items():
+        obs = observed.get(obs_id, {})
+        preds = []
+        for pred_id in pred_ids:
+            pairs = theory.get(pred_id, [{}])
+            for n, gm in enumerate(pairs):
+                label = f"{pred_id}_{n + 1}" if len(pairs) > 1 else pred_id
+                preds.append((label, gm))
+
+        z0_obs = multirow(len(preds), fmt_std(obs.get("z0"), obs.get("z0_std")))
+        A0_obs = multirow(len(preds), fmt_sci(obs.get("A0"), obs.get("A0_std")))
+        for n, (label, gm) in enumerate(preds):
+            first = n == 0
+            body.append(
+                f"${label}$ & {z0_obs if first else ''} & {fmt(gm.get('z0'))} & "
+                f"{A0_obs if first else ''} \\\\"
             )
 
     lines = [
         r"\begin{table}",
         r"\centering",
-        r"\begin{tabular}{llrrrr}",
-        r"\toprule",
-        r"Ray ID & pair & $z_0$ obs. [m] & $z_0$ GM [m] & $t_0$ obs. [min] & $t_0$ GM [min] \\",
-        r"\midrule",
-        *rows,
-        r"\bottomrule",
+        r"\begin{tabular}{lccc}",
+        r"\hline\hline",
+        r"Ray ID & $z_0$ obs [m] & $z_0$ pred [m] & $A_0$ obs \\",
+        r"\hline",
+        *body,
+        r"\hline\hline",
         r"\end{tabular}",
-        r"\caption{Observed and theoretical (1GM) vertical coherence length $z_0$ and coherence time $t_0$.}",
+        r"\caption{Observed and predicted (1GM path integral) vertical coherence length $z_0$, and the "
+        r"observed coherence amplitude $A_0$. Subscripts denote separate eigenray paths.}",
         r"\label{tab:coherence_lengths}",
         r"\end{table}",
     ]

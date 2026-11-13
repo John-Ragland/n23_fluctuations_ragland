@@ -838,8 +838,9 @@ def compute_mean_pulse():
 def coherence_lengths(output_path=None):
     """
     Table II: print a LaTeX table of the observed (Gaussian fit to the mutual coherence) and predicted (1GM path
-    integral) vertical coherence lengths, and the observed fit amplitude A0, for the ducted rays, from the
-    paper's wavefront values (`tools.PAPER_SETTINGS`).
+    integral) vertical coherence lengths, and the observed fit amplitude A0, for the ducted rays
+    (`tools.COHERENCE_TABLE_ROWS`: the +7 observation spans the -8 and +7 predictions, and the -6
+    observation its three eigenray paths), from the paper's wavefront values (`tools.PAPER_SETTINGS`).
 
     The observed z0 is fitted to the nonzero lags of the unnormalized mutual coherence, as in the
     Ducted_VC figure, and reported ± its leave-one-transmission-out jackknife standard deviation

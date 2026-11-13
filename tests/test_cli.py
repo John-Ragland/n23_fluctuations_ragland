@@ -213,28 +213,46 @@ def test_fit_coherence_length_recovers_gaussian():
 
 
 def test_coherence_lengths_latex_table():
-    """One row per eigenray pair, missing values as --."""
+    """One row per predicted path, observations spanning their rows, missing values as --."""
     from n23_fluctuations_ragland import tools
 
-    observed = {"-6": {"z0": 100.0, "t0": 3600.0}, "+7": {"z0": 50.0, "t0": 7200.0}}
+    observed = {
+        "+7": {"z0": 50.0, "z0_std": 4.25, "A0": 4.1e11, "A0_std": 3e10},
+        "-6": {"z0": 100.0, "A0": 2.0e11},
+    }
     theory = {
-        "-6": [{"z0": 90.0, "t0": 1800.0}, {"z0": 95.0, "t0": 1900.0}],
-        "-8": [{"z0": 80.0, "t0": 1200.0}],
+        "-8": [{"z0": 80.0}],
+        "+7": [{"z0": 70.0}],
+        "-6": [{"z0": 90.0}, {"z0": 95.0}, {"z0": 96.0}],
     }
     table = tools.coherence_lengths_latex_table(observed, theory)
+    lines = table.splitlines()
 
-    assert "\\begin{tabular}" in table
-    rows = [line for line in table.splitlines() if line.startswith("$")]
-    assert len(rows) == 4
-    assert rows[0] == "$-8$ & 0 & -- & 80.0 & -- & 20.0 \\\\"
-    assert rows[1] == "$+7$ & -- & 50.0 & -- & 120.0 & -- \\\\"
-    assert rows[2] == "$-6$ & 0 & 100.0 & 90.0 & 60.0 & 30.0 \\\\"
-    assert rows[3].startswith("$-6$ & 1 & -- & 95.0")
+    header = r"Ray ID & $z_0$ obs [m] & $z_0$ pred [m] & $A_0$ obs \\"
+    assert lines[lines.index(header) - 1] == r"\hline\hline"
+    assert lines[lines.index(header) + 1] == r"\hline"
+    assert lines[lines.index(r"\end{tabular}") - 1] == r"\hline\hline"
 
-    observed["+7"]["z0_std"] = 4.25
-    table = tools.coherence_lengths_latex_table(observed, theory)
-    rows = [line for line in table.splitlines() if line.startswith("$")]
-    assert rows[1] == "$+7$ & -- & 50.0 $\\pm$ 4.2 & -- & 120.0 & -- \\\\"
+    rows = [line for line in lines if line.startswith("$")]
+    assert [row.split(" & ")[0] for row in rows] == [
+        "$-8$",
+        "$+7$",
+        "$-7$",
+        "$+6$",
+        "$-6_1$",
+        "$-6_2$",
+        "$-6_3$",
+    ]
+    assert rows[0] == (
+        r"$-8$ & \multirow{2}{*}{50.0 $\pm$ 4.2} & 80.0 & "
+        r"\multirow{2}{*}{$(4.10 \pm 0.30) \times 10^{11}$} \\"
+    )
+    assert rows[1] == r"$+7$ &  & 70.0 &  \\"
+    assert rows[2] == r"$-7$ & -- & -- & -- \\"
+    assert rows[4] == (
+        r"$-6_1$ & \multirow{3}{*}{100.0} & 90.0 & \multirow{3}{*}{$2.00 \times 10^{11}$} \\"
+    )
+    assert rows[6] == r"$-6_3$ &  & 96.0 &  \\"
 
 
 def test_structure_function_from_coherence():
