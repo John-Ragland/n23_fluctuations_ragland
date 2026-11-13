@@ -28,12 +28,21 @@
 
 <!-- prettier-ignore-end -->
 
+<p align="center">
+  <img src="docs/imgs/F_phi_chi_ducted.png" alt="Phase and log-amplitude spectra" width="600">
+</p>
+
+This package contains all of the analysis that has been done for
 Code supporting the data analysis of the NESCAFE 2023 Experiment. The NESCAFE
 2023 experiment consisted of acoustic transmissions across the Gulf Stream
 front. An analysis of the fluctuations of acoustic intensity, phase, and the
-coherence of the acoustic receptions is described the paper _Observations of
-Acoustic Fluctuations Across the Gulf Stream Front_, available in preprint
-[here](https://essopenarchive.org/doi/full/10.22541/essoar.15006016/v1).
+coherence of the acoustic receptions is described in the paper _Analysis of
+acoustic fluctuations for 150-km, low frequency transmissions across the Gulf
+Stream in the vicinity of the New England Seamount chain_ (Ragland et al.,
+2026; submitted to the Journal of the Acoustical Society of America), available
+as a preprint at
+[doi:10.22541/essoar.15006016/v1](https://doi.org/10.22541/essoar.15006016/v1).
+See [Citation](#citation) for how to cite it.
 
 This package contains the code used for the data analysis that is presented in
 this paper, as well as generating the figures for publication.
@@ -175,6 +184,28 @@ The publication figures are made by `src/n23_fluctuations_ragland/figures.py`
 (see above). The notebooks in `notebooks/publication_figures` are the original
 figure source and may drift from the current code.
 
+
+## Citation
+
+If you use this code, please cite the paper. The citation is in
+[`CITATION.cff`](CITATION.cff), and GitHub's "Cite this repository" button
+(in the repository sidebar) exports it as APA or BibTeX:
+
+```bibtex
+@article{Ragland_2026,
+  title     = {Analysis of acoustic fluctuations for 150-km, low frequency
+               transmissions across the Gulf Stream in the vicinity of the New
+               England Seamount chain},
+  author    = {Ragland, John and Colosi, John and Hoekstra, Katherine and
+               Dzieciuch, Matthew and Alford, Matthew and Bellerjeau, Charlotte},
+  year      = {2026},
+  month     = jul,
+  publisher = {ESS Open Archive},
+  doi       = {10.22541/essoar.15006016/v1},
+  url       = {https://doi.org/10.22541/essoar.15006016/v1},
+  note      = {Preprint, submitted to the Journal of the Acoustical Society of America}
+}
+```
 
 ## References
 

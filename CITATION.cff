@@ -1,0 +1,62 @@
+cff-version: 1.2.0
+message: >-
+  If you use this software, please cite the paper it supports, given below as
+  the preferred citation.
+title: n23_fluctuations_ragland
+abstract: >-
+  Code supporting the analysis of acoustic fluctuations of intensity and phase
+  for the NESCAFE 2023 acoustic tomography experiment.
+type: software
+authors:
+  - family-names: Ragland
+    given-names: John
+repository-code: "https://github.com/John-Ragland/n23_fluctuations_ragland"
+license: BSD-3-Clause
+preferred-citation:
+  type: article
+  title: >-
+    Analysis of acoustic fluctuations for 150-km, low frequency transmissions
+    across the Gulf Stream in the vicinity of the New England Seamount chain
+  authors:
+    - family-names: Ragland
+      given-names: John
+    - family-names: Colosi
+      given-names: John
+    - family-names: Hoekstra
+      given-names: Katherine
+    - family-names: Dzieciuch
+      given-names: Matthew
+    - family-names: Alford
+      given-names: Matthew
+    - family-names: Bellerjeau
+      given-names: Charlotte
+  year: 2026
+  month: 7
+  publisher:
+    name: ESS Open Archive
+  doi: 10.22541/essoar.15006016/v1
+  url: "https://essopenarchive.org/doi/full/10.22541/essoar.15006016/v1"
+  notes: Preprint, submitted to the Journal of the Acoustical Society of America.
+  languages:
+    - en
+  abstract: >-
+    Results are presented from the 2023 pilot study of the New England Seamount
+    Calibrated Acoustic Fluctuation Experiment (NESCAFE23), designed to quantify
+    acoustic transmission variability across the Gulf Stream near the Atlantis
+    II seamount complex. Western boundary current systems such as the Gulf
+    Stream present a challenging environment for ocean acoustics, where three
+    distinct water masses co-mingle within a compact, dynamic frontal region.
+    In late April 2023, two acoustic transceivers (SION and SIOE) were deployed
+    153 km apart and exchanged hourly 250 Hz broadband transmissions over 24
+    hours before SIOE was lost to mooring blowdown. Twenty-three receptions
+    between 205–295 Hz were recorded on two vertical sub-arrays spanning
+    1100–850 m and 340–90 m depth. The acoustic path directly transected the
+    Gulf Stream front, introducing strong horizontal sound-speed and density
+    structure. Collocated temperature and salinity measurements show that the
+    internal-wave field near the receiver is consistent with a Garrett–Munk
+    spectrum at standard energy levels. Vertical spectra of phase and
+    log-amplitude, and vertical coherence, are compared with weak-fluctuation
+    and path-integral predictions, showing partial agreement but sensitivity to
+    fine-scale frontal structure and multi-path interference. Observed
+    intensity distributions exhibit glinting and fade-outs indicative of near
+    partially saturated propagation.
