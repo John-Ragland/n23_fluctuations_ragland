@@ -766,8 +766,10 @@ def _compute_phi_chi_LS_fit(
 
 def coherence_lengths(remove_array_tilt=None, remove_pattern=None):
     """
-    Print a LaTeX table of the observed (Gaussian fit to the mutual coherence) and theoretical (1GM path
-    integral) vertical coherence lengths and coherence times for each ray.
+    Print a LaTeX table of the observed (Gaussian fit to the mutual coherence) and predicted (1GM path
+    integral) vertical coherence lengths, and the observed fit amplitude A0, for the ducted rays
+    (`tools.COHERENCE_TABLE_ROWS`: the +7 observation spans the -8 and +7 predictions, and the -6
+    observation its three eigenray paths).
 
     The observed z0 is fitted to the nonzero lags of the unnormalized mutual coherence, as in the
     Ducted_VC figure, and reported ± its leave-one-transmission-out jackknife standard deviation
