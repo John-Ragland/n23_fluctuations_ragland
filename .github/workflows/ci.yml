@@ -43,7 +43,6 @@ jobs:
           ref: main
           submodules: false
           path: workspace
-          token: ${{ secrets.NESCAFE23_TOKEN }}
 
       - name: Remove empty submodule placeholder
         run: rm -rf workspace/${{ env.SUBMODULE_PATH }}
