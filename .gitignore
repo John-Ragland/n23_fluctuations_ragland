@@ -192,7 +192,7 @@ Thumbs.db
 figures/
 
 
-src/nescafe23_fluctuations/source_localization.py
+src/n23_fluctuations_ragland/source_localization.py
 # This file is omitted because the paper explaining these methods in the process of being published.
 # If you are interested in the specifics of this code, please feel free to reach out.
 
@@ -209,3 +209,9 @@ uv.lock
 
 reference/
 notebooks/auxiliary/
+
+# Data files
+*.pkl
+*.nc
+*.npz
+*.npy

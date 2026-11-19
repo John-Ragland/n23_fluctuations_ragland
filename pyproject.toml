@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 [project]
 name = "n23_fluctuations_ragland"
 authors = [
-  { name = "John Ragland", email = "jragland96@gmail.com" },
+  { name = "John Ragland", email = "john.ragland@whoi.edu" },
 ]
 description = "Code supporting the analysis of acoustic fluctuations of intensity and phase for the NESCAFE 2023 acoustic tomography experiment."
 readme = "README.md"
@@ -14,7 +14,7 @@ license = "BSD-3-Clause"
 license-files = ["LICENSE"]
 requires-python = ">=3.10"
 classifiers = [
-  "Development Status :: 1 - Planning",
+  "Development Status :: 4 - Beta",
   "Intended Audience :: Science/Research",
   "Intended Audience :: Developers",
   "Operating System :: OS Independent",
@@ -53,10 +53,9 @@ n23_fluctuation_analysis = "n23_fluctuations_ragland.cli:main"
 n23_panel = "n23_fluctuations_ragland.cli:serve_panel_apps"
 
 [project.urls]
-Homepage = "https://github.com/John-Ragland/NESCAFE23_fluctuations"
-"Bug Tracker" = "https://github.com/John-Ragland/NESCAFE23_fluctuations/issues"
-Discussions = "https://github.com/John-Ragland/NESCAFE23_fluctuations/discussions"
-Changelog = "https://github.com/John-Ragland/NESCAFE23_fluctuations/releases"
+Homepage = "https://github.com/John-Ragland/n23_fluctuations_ragland"
+"Bug Tracker" = "https://github.com/John-Ragland/n23_fluctuations_ragland/issues"
+Changelog = "https://github.com/John-Ragland/n23_fluctuations_ragland/releases"
 
 
 [dependency-groups]
@@ -103,7 +102,7 @@ report.exclude_also = [
 
 
 [tool.ruff]
-extend-exclude = ["notebooks", "dev", "panel_apps", "analysis", "src/archive.py", "*.ipynb"]
+extend-exclude = ["notebooks", "dev", "panel_apps", "analysis", "*.ipynb"]
 
 [tool.ruff.lint]
 extend-select = [

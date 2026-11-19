@@ -3,12 +3,12 @@ _commit: 2025.11.21-16-g602915c
 _src_path: gh:scientific-python/cookie
 backend: hatch
 docs: sphinx
-email: jragland96@gmail.com
+email: john.ragland@whoi.edu
 full_name: John Ragland
 license: BSD
 org: John-Ragland
-project_name: NESCAFE23_fluctuations
+project_name: n23_fluctuations_ragland
 project_short_description: Code supporting the analysis of acoustic fluctuations of
     intensity and phase for the NESCAFE 2023 acoustic tomography experiment.
-url: https://github.com/John-Ragland/NESCAFE23_fluctuations
+url: https://github.com/John-Ragland/n23_fluctuations_ragland
 vcs: true

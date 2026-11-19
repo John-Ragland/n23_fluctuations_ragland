@@ -52,7 +52,6 @@ EIG_INDEXS = {
 }
 
 
-# TODO remove this function
 def get_fctd(fn, filt=True, z_smooth=100, r_smooth=10e3, r_shift=0):
     """
     Open, shift in range, and smooth fast ctd data

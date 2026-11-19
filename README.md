@@ -1,27 +1,13 @@
-# NESCAFE23_fluctuations
+# n23_fluctuations_ragland
 
 [![Actions Status][actions-badge]][actions-link]
-[![Documentation Status][rtd-badge]][rtd-link]
-
-[![GitHub Discussion][github-discussions-badge]][github-discussions-link]
-
-[![Coverage][coverage-badge]][coverage-link]
-
 [![Code style: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/format.json)](https://github.com/astral-sh/ruff)
 
 <!-- SPHINX-START -->
 
 <!-- prettier-ignore-start -->
-[actions-badge]:            https://github.com/John-Ragland/NESCAFE23_fluctuations/workflows/CI/badge.svg
-[actions-link]:             https://github.com/John-Ragland/NESCAFE23_fluctuations/actions
-[conda-badge]:              https://img.shields.io/conda/vn/conda-forge/NESCAFE23_fluctuations
-[conda-link]:               https://github.com/conda-forge/NESCAFE23_fluctuations-feedstock
-[github-discussions-badge]: https://img.shields.io/static/v1?label=Discussions&message=Ask&color=blue&logo=github
-[github-discussions-link]:  https://github.com/John-Ragland/NESCAFE23_fluctuations/discussions
-[rtd-badge]:                https://readthedocs.org/projects/NESCAFE23_fluctuations/badge/?version=latest
-[rtd-link]:                 https://NESCAFE23_fluctuations.readthedocs.io/en/latest/?badge=latest
-[coverage-badge]:           https://codecov.io/github/John-Ragland/NESCAFE23_fluctuations/branch/main/graph/badge.svg
-[coverage-link]:            https://codecov.io/github/John-Ragland/NESCAFE23_fluctuations
+[actions-badge]:            https://github.com/John-Ragland/n23_fluctuations_ragland/workflows/CI/badge.svg
+[actions-link]:             https://github.com/John-Ragland/n23_fluctuations_ragland/actions
 
 <!-- prettier-ignore-end -->
 
@@ -29,8 +15,8 @@
   <img src="docs/imgs/F_phi_chi_ducted.png" alt="Phase and log-amplitude spectra" width="600">
 </p>
 
-This package contains all of the analysis that has been done for
-Code supporting the data analysis of the NESCAFE 2023 Experiment. The NESCAFE
+This package contains the code supporting the data analysis of the NESCAFE
+2023 Experiment. The NESCAFE
 2023 experiment consisted of acoustic transmissions across the Gulf Stream
 front. An analysis of the fluctuations of acoustic intensity, phase, and the
 coherence of the acoustic receptions is described in the paper _Analysis of
@@ -60,7 +46,9 @@ git submodule update --init projects/n23_fluctuations_ragland
 uv sync --package n23_fluctuations_ragland --all-groups
 ```
 
-Some of the workspace's other submodules are not public yet, so don't clone
+Some of the workspace's other submodules are not public yet (see
+[Released components](https://github.com/John-Ragland/NESCAFE23#released-components)
+in the NESCAFE23 README), so don't clone
 with `--recurse-submodules`: git would fail (or ask for GitHub credentials) on
 the private ones. Their folders stay empty, which `uv` ignores. Because they are
 missing, `uv sync` updates `uv.lock` to drop them; this is expected, and
@@ -132,7 +120,7 @@ Outputs:
   time offsets and their jackknife errors, mean pulse, peak picks, array tilt,
   hydrophone pattern, wavefront values, ray traces)
 - `paper_output/table_II.tex`: Table II
-- `paper_output/figures/`: the figures, named as in `reference/`
+- `paper_output/figures/`: the figures, named as in the manuscript
 - `paper_output/reproduction_report.txt`: package version and commit, the
   analysis settings (`tools.PAPER_SETTINGS`), the time of each step, and the
   numbers the paper quotes from the data products
