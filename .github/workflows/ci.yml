@@ -63,4 +63,4 @@ jobs:
 
       - name: Run tests from workspace root
         working-directory: workspace
-        run: uv run pytest -ra --durations=20
+        run: uv run pytest ${{ env.SUBMODULE_PATH }}/tests -ra --durations=20
