@@ -213,7 +213,7 @@ def test_fit_coherence_length_recovers_gaussian():
 
 
 def test_coherence_lengths_latex_table():
-    """One row per predicted path, observations spanning their rows, missing values as --."""
+    """One row per predicted path, observations spanning their rows, predicted t0 only, missing values as --."""
     from n23_fluctuations_ragland import tools
 
     observed = {
@@ -221,14 +221,14 @@ def test_coherence_lengths_latex_table():
         "-6": {"z0": 100.0, "A0": 2.0e11},
     }
     theory = {
-        "-8": [{"z0": 80.0}],
-        "+7": [{"z0": 70.0}],
-        "-6": [{"z0": 90.0}, {"z0": 95.0}, {"z0": 96.0}],
+        "-8": [{"z0": 80.0, "t0": 497.35}],
+        "+7": [{"z0": 70.0, "t0": 479.76}],
+        "-6": [{"z0": 90.0, "t0": 536.4}, {"z0": 95.0, "t0": 536.0}, {"z0": 96.0}],
     }
     table = tools.coherence_lengths_latex_table(observed, theory)
     lines = table.splitlines()
 
-    header = r"Ray ID & $z_0$ obs [m] & $z_0$ pred [m] & $A_0$ obs \\"
+    header = r"Ray ID & $z_0$ obs [m] & $z_0$ pred [m] & $A_0$ obs & $t_0$ pred [s] \\"
     assert lines[lines.index(header) - 1] == r"\hline\hline"
     assert lines[lines.index(header) + 1] == r"\hline"
     assert lines[lines.index(r"\end{tabular}") - 1] == r"\hline\hline"
@@ -245,14 +245,14 @@ def test_coherence_lengths_latex_table():
     ]
     assert rows[0] == (
         r"$-8$ & \multirow{2}{*}{50.0 $\pm$ 4.2} & 80.0 & "
-        r"\multirow{2}{*}{$(4.10 \pm 0.30) \times 10^{11}$} \\"
+        r"\multirow{2}{*}{$(4.10 \pm 0.30) \times 10^{11}$} & 497 \\"
     )
-    assert rows[1] == r"$+7$ &  & 70.0 &  \\"
-    assert rows[2] == r"$-7$ & -- & -- & -- \\"
+    assert rows[1] == r"$+7$ &  & 70.0 &  & 480 \\"
+    assert rows[2] == r"$-7$ & -- & -- & -- & -- \\"
     assert rows[4] == (
-        r"$-6_1$ & \multirow{3}{*}{100.0} & 90.0 & \multirow{3}{*}{$2.00 \times 10^{11}$} \\"
+        r"$-6_1$ & \multirow{3}{*}{100.0} & 90.0 & \multirow{3}{*}{$2.00 \times 10^{11}$} & 536 \\"
     )
-    assert rows[6] == r"$-6_3$ &  & 96.0 &  \\"
+    assert rows[6] == r"$-6_3$ &  & 96.0 &  & -- \\"
 
 
 def test_structure_function_from_coherence():

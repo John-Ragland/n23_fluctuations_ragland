@@ -2791,7 +2791,8 @@ def coherence_lengths_latex_table(
     observed: dict, theory: dict, rows: dict | None = None
 ) -> str:
     r"""
-    Format observed and theoretical vertical coherence lengths as a LaTeX table.
+    Format observed and theoretical vertical coherence lengths, and the theoretical coherence times, as a
+    LaTeX table.
 
     Each observed ray spans (``\multirow``) the rows of the predictions it is compared to: one row per
     predicted ray ID and eigenray pair. A ray ID with several eigenray pairs is labelled with a subscript
@@ -2809,15 +2810,16 @@ def coherence_lengths_latex_table(
     Returns
     -------
     table : str
-        LaTeX table with columns Ray ID, $z_0$ obs [m], $z_0$ pred [m], $A_0$ obs. Missing values are `--`.
+        LaTeX table with columns Ray ID, $z_0$ obs [m], $z_0$ pred [m], $A_0$ obs, $t_0$ pred [s]. Only the
+        predicted $t_0$ is tabulated (no observed $t_0$). Missing values are `--`.
     """
     if rows is None:
         rows = COHERENCE_TABLE_ROWS
 
-    def fmt(value):
+    def fmt(value, decimals=1):
         if value is None or not np.isfinite(value):
             return "--"
-        return f"{value:.1f}"
+        return f"{value:.{decimals}f}"
 
     def fmt_std(value, std):
         if std is None or not np.isfinite(std) or fmt(value) == "--":
@@ -2852,21 +2854,22 @@ def coherence_lengths_latex_table(
             first = n == 0
             body.append(
                 f"${label}$ & {z0_obs if first else ''} & {fmt(gm.get('z0'))} & "
-                f"{A0_obs if first else ''} \\\\"
+                f"{A0_obs if first else ''} & {fmt(gm.get('t0'), 0)} \\\\"
             )
 
     lines = [
         r"\begin{table}",
         r"\centering",
-        r"\begin{tabular}{lccc}",
+        r"\begin{tabular}{lcccc}",
         r"\hline\hline",
-        r"Ray ID & $z_0$ obs [m] & $z_0$ pred [m] & $A_0$ obs \\",
+        r"Ray ID & $z_0$ obs [m] & $z_0$ pred [m] & $A_0$ obs & $t_0$ pred [s] \\",
         r"\hline",
         *body,
         r"\hline\hline",
         r"\end{tabular}",
-        r"\caption{Observed and predicted (1GM path integral) vertical coherence length $z_0$, and the "
-        r"observed coherence amplitude $A_0$. Subscripts denote separate eigenray paths.}",
+        r"\caption{Observed and predicted (1GM path integral) vertical coherence length $z_0$, the "
+        r"observed coherence amplitude $A_0$, and the predicted (1GM path integral) coherence time $t_0$. "
+        r"Subscripts denote separate eigenray paths.}",
         r"\label{tab:coherence_lengths}",
         r"\end{table}",
     ]

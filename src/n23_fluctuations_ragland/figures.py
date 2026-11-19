@@ -1561,7 +1561,8 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
     level with its noise levels, model + noise dashed. ``"gm_levels"`` draws the GM levels of
     ``cfg.gm_levels`` (default ``[1]``, 1x GM only, as in the paper; ``[1, 2]`` adds 2x GM dashed) without noise and
     does not need the fit, like `plot_ducted_vc`; the -8 overlay on the +7 panel is dash-dot for the
-    first level and dotted for the second.
+    first level and dotted for the second. The shared GM-strength legend is drawn only when more
+    than one level is plotted.
     """
     whoi_colors = ["#00B7BD", "#EE5340"]
 
@@ -1804,8 +1805,9 @@ def plot_F_phi_chi_ducted(cfg: PublicationFiguresConfig) -> Figure:
                 loc=(0.75, 0.05),
             )
 
-    if fixed_gm:
-        # leave a strip at the bottom for the shared GM-strength legend, as in Ducted_VC
+    if fixed_gm and len(cfg.gm_levels) > 1:
+        # leave a strip at the bottom for the shared GM-strength legend, as in Ducted_VC; a single
+        # level needs no legend (the caption states it)
         plt.tight_layout(rect=(0, 0.045, 1, 1))
         gm_handles = [
             mlines.Line2D(
